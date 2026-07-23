@@ -62,12 +62,23 @@ function componentsTarget(config: SejuaniConfig, opts: { components?: string }):
 
 const program = new Command();
 
+// 从 package.json 动态读取版本，避免硬编码与实际发布版本不一致
+function readPkgVersion(): string {
+  try {
+    // dist/index.js 与 src/index.ts 均位于包根的一级子目录，package.json 在上层
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return require('../package.json').version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
 program
   .name('sejuani')
   .description(
     '批量管理前端工程 / 组件（projects & components）的 package.json / yarn.lock、仓同步与依赖治理的终端工具 (别名: sjn)'
   )
-  .version('1.0.0');
+  .version(readPkgVersion());
 
 // 默认 / start：交互式向导
 program
