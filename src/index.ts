@@ -1,0 +1,486 @@
+#!/usr/bin/env node
+import path from 'path';
+import { Command } from 'commander';
+import { discoverComponents } from './core/discover';
+import {
+  buildNameChanges,
+  buildReplaceUrlChanges,
+  buildUpgradeChanges,
+  buildVersionChanges,
+} from './core/operations';
+import { runChanges } from './core/runner';
+import { createVirtualSpace } from './core/link';
+import { runWizard } from './ui/wizard';
+import { BumpType } from './core/version';
+import { chalk, logger } from './utils/logger';
+import { loadConfig, resolveScanTarget } from './core/configLoader';
+import { SejuaniConfig } from './config';
+import { ScanTarget } from './ui/select';
+import { syncComponents } from './core/repoSync';
+import { printRegistries } from './core/registries';
+import { checkDependencies } from './core/depCheck';
+import { buildCatalog, printCatalog } from './core/catalog';
+import {
+  printProjectsUsing,
+  printComponentsOfProject,
+  printUsageSummary,
+} from './core/usage';
+
+/**
+ * 依据 CLI 选项与配置解析出一个扫描目标。
+ * 优先级：--dir > --projects > --components > 配置/内置默认（defaultKind）。
+ * 三个 scope 选项都会生效：显式给出哪个就扫哪个，均未给出时回退默认根。
+ */
+function pickScanTarget(
+  config: SejuaniConfig,
+  opts: { dir?: string; projects?: string; components?: string },
+  defaultKind: 'projects' | 'components'
+): ScanTarget {
+  if (opts.dir) return { dir: path.resolve(opts.dir) };
+  if (opts.projects) return { dir: path.resolve(opts.projects) };
+  if (opts.components) return { dir: path.resolve(opts.components) };
+  return resolveScanTarget(config.roots[defaultKind]);
+}
+
+/** 解析 projects 根扫描目标（供需要工程列表的命令使用）。 */
+function projectsTarget(config: SejuaniConfig, opts: { projects?: string }): ScanTarget {
+  return opts.projects ? { dir: path.resolve(opts.projects) } : resolveScanTarget(config.roots.projects);
+}
+
+/** 解析 components 根扫描目标（供需要 catalog 的命令使用）。 */
+function componentsTarget(config: SejuaniConfig, opts: { components?: string }): ScanTarget {
+  return opts.components ? { dir: path.resolve(opts.components) } : resolveScanTarget(config.roots.components);
+}
+
+const program = new Command();
+
+program
+  .name('sejuani')
+  .description(
+    '批量管理前端工程 / 组件（projects & components）的 package.json / yarn.lock、仓同步与依赖治理的终端工具 (别名: sjn)'
+  )
+  .version('1.0.0');
+
+// 默认 / start：交互式向导
+program
+  .command('start', { isDefault: true })
+  .description('启动交互式向导（默认命令）')
+  .option('-c, --config <file>', '指定 sejuani.config.json')
+  .action(async (opts) => {
+    await runWizard(opts.config);
+  });
+
+// 替换 yarn.lock 中的 resolved URL
+program
+  .command('replace-url')
+  .description('批量替换 yarn.lock 中 resolved 的 URL 片段')
+  .option('-c, --config <file>', '指定 sejuani.config.json')
+  .option('-d, --dir <dir>', '扫描目录（覆盖配置）')
+  .option('--projects <dir>', '工程根目录（覆盖配置）')
+  .option('--components <dir>', '组件库根目录（覆盖配置）')
+  .requiredOption('-f, --from <from>', '要替换的 URL 片段')
+  .requiredOption('-t, --to <to>', '替换为的 URL 片段')
+  .option('--dry-run', '仅预览不写入', false)
+  .option('--no-backup', '不生成 .bak 备份')
+  .option('-y, --yes', '跳过确认', false)
+  .option('--diff', '显示 diff 明细', false)
+  .action(async (opts) => {
+    const config = loadConfig(opts.config);
+    const target = pickScanTarget(config, opts, 'components');
+    const comps = await discoverComponents(target.dir, {
+      requireYarnLock: true,
+      maxDepth: target.maxDepth,
+    });
+    const changes = buildReplaceUrlChanges(comps, opts.from, opts.to);
+    await runChanges(changes, {
+      dryRun: opts.dryRun,
+      backup: opts.backup,
+      yes: opts.yes,
+      showDiff: opts.diff,
+    });
+  });
+
+// 修改 package.json version
+program
+  .command('set-version')
+  .description('批量修改 package.json 的 version（bump 或指定值，保留 -后缀）')
+  .option('-c, --config <file>', '指定 sejuani.config.json')
+  .option('-d, --dir <dir>', '扫描目录（覆盖配置）')
+  .option('--projects <dir>', '工程根目录（覆盖配置）')
+  .option('--components <dir>', '组件库根目录（覆盖配置）')
+  .option('-b, --bump <level>', '递增级别: patch|minor|major')
+  .option('-t, --to <version>', '设为指定版本，如 1.2.0 或 1.2.0-chery')
+  .option('--keep-suffix', 'set 模式下若未写后缀则沿用当前后缀', false)
+  .option('--dry-run', '仅预览不写入', false)
+  .option('--no-backup', '不生成 .bak 备份')
+  .option('-y, --yes', '跳过确认', false)
+  .option('--diff', '显示 diff 明细', false)
+  .action(async (opts) => {
+    if (!opts.bump && !opts.to) {
+      logger.error('请提供 --bump <level> 或 --to <version> 之一。');
+      process.exitCode = 1;
+      return;
+    }
+    const config = loadConfig(opts.config);
+    const target = pickScanTarget(config, opts, 'components');
+    const comps = await discoverComponents(target.dir, { maxDepth: target.maxDepth });
+    const changes = opts.bump
+      ? buildVersionChanges(comps, { mode: 'bump', bump: opts.bump as BumpType })
+      : buildVersionChanges(comps, { mode: 'set', target: opts.to, keepSuffix: opts.keepSuffix });
+    await runChanges(changes, {
+      dryRun: opts.dryRun,
+      backup: opts.backup,
+      yes: opts.yes,
+      showDiff: opts.diff,
+    });
+  });
+
+// 修改 package.json name
+program
+  .command('set-name')
+  .description('批量修改 package.json 的 name（查找替换或设为固定值）')
+  .option('-c, --config <file>', '指定 sejuani.config.json')
+  .option('-d, --dir <dir>', '扫描目录（覆盖配置）')
+  .option('--projects <dir>', '工程根目录（覆盖配置）')
+  .option('--components <dir>', '组件库根目录（覆盖配置）')
+  .option('--find <find>', '要查找的子串')
+  .option('--replace <replace>', '替换为', '')
+  .option('-t, --to <name>', '整体设为固定 name')
+  .option('--dry-run', '仅预览不写入', false)
+  .option('--no-backup', '不生成 .bak 备份')
+  .option('-y, --yes', '跳过确认', false)
+  .option('--diff', '显示 diff 明细', false)
+  .action(async (opts) => {
+    if (!opts.find && !opts.to) {
+      logger.error('请提供 --find <str> 或 --to <name> 之一。');
+      process.exitCode = 1;
+      return;
+    }
+    const config = loadConfig(opts.config);
+    const target = pickScanTarget(config, opts, 'components');
+    const comps = await discoverComponents(target.dir, { maxDepth: target.maxDepth });
+    const changes = opts.to
+      ? buildNameChanges(comps, { target: opts.to })
+      : buildNameChanges(comps, { find: opts.find, replace: opts.replace });
+    await runChanges(changes, {
+      dryRun: opts.dryRun,
+      backup: opts.backup,
+      yes: opts.yes,
+      showDiff: opts.diff,
+    });
+  });
+
+// 创建虚拟空间（软链）
+program
+  .command('link')
+  .description('把选定组件以软链聚合到一个虚拟空间目录')
+  .option('-c, --config <file>', '指定 sejuani.config.json')
+  .option('-d, --dir <dir>', '扫描目录（覆盖配置）')
+  .option('--projects <dir>', '工程根目录（覆盖配置）')
+  .option('--components <dir>', '组件库根目录（覆盖配置）')
+  .requiredOption('-i, --into <into>', '虚拟空间目录')
+  .option('--force', '覆盖已存在的同名软链', false)
+  .option('--dry-run', '仅预览不创建', false)
+  .option('-y, --yes', '跳过确认', false)
+  .action(async (opts) => {
+    const config = loadConfig(opts.config);
+    const target = pickScanTarget(config, opts, 'components');
+    const comps = await discoverComponents(target.dir, { maxDepth: target.maxDepth });
+    await createVirtualSpace(comps, {
+      into: opts.into,
+      force: opts.force,
+      dryRun: opts.dryRun,
+      yes: opts.yes,
+    });
+  });
+
+// Feature A - 仓同步
+program
+  .command('sync')
+  .description('仓同步：对每个组件 npm pack → npm publish → 清理 tgz')
+  .option('-c, --config <file>', '指定 sejuani.config.json')
+  .option('-d, --dir <dir>', '扫描目录（覆盖配置）')
+  .option('--projects <dir>', '工程根目录（覆盖配置）')
+  .option('--components <dir>', '组件库根目录（覆盖配置，默认同步组件库）')
+  .option('--pack-registry <url>', 'pack 源 registry（覆盖配置）')
+  .option('--publish-registry <url>', 'publish 目标 registry（覆盖配置）')
+  .option('--work-dir <dir>', '执行 pack/publish 的工作目录（默认临时目录）')
+  .option('--dry-run', '仅打印命令不执行', false)
+  .option('-y, --yes', '跳过确认', false)
+  .action(async (opts) => {
+    const config = loadConfig(opts.config);
+    const target = pickScanTarget(config, opts, 'components');
+    const comps = await discoverComponents(target.dir, { maxDepth: target.maxDepth });
+    await syncComponents(comps, {
+      packRegistry: opts.packRegistry ?? config.registries.pack,
+      publishRegistry: opts.publishRegistry ?? config.registries.publish,
+      workDir: opts.workDir,
+      dryRun: opts.dryRun,
+      yes: opts.yes,
+    });
+  });
+
+// Feature B - 枚举 yarn.lock 仓库
+program
+  .command('registries')
+  .description('枚举所选组件 yarn.lock 中出现的所有仓库（registry base）')
+  .option('-c, --config <file>', '指定 sejuani.config.json')
+  .option('-d, --dir <dir>', '扫描目录（覆盖配置）')
+  .option('--projects <dir>', '工程根目录（覆盖配置）')
+  .option('--components <dir>', '组件库根目录（覆盖配置）')
+  .option('--by-component', '展开每个仓库涉及的组件', false)
+  .action(async (opts) => {
+    const config = loadConfig(opts.config);
+    const target = pickScanTarget(config, opts, 'components');
+    const comps = await discoverComponents(target.dir, {
+      requireYarnLock: true,
+      maxDepth: target.maxDepth,
+    });
+    printRegistries(comps, opts.byComponent);
+  });
+
+// Feature C - 校验依赖是否存在
+program
+  .command('check-deps')
+  .description('批量校验 yarn.lock 中 resolved 依赖 URL 是否可访问')
+  .option('-c, --config <file>', '指定 sejuani.config.json')
+  .option('-d, --dir <dir>', '扫描目录（覆盖配置）')
+  .option('--projects <dir>', '工程根目录（覆盖配置）')
+  .option('--components <dir>', '组件库根目录（覆盖配置）')
+  .option('--concurrency <n>', '并发数', (v) => parseInt(v, 10), 12)
+  .option('--timeout <ms>', '单请求超时(ms)', (v) => parseInt(v, 10), 8000)
+  .option('--only-missing', '只显示异常项', false)
+  .action(async (opts) => {
+    const config = loadConfig(opts.config);
+    const target = pickScanTarget(config, opts, 'components');
+    const comps = await discoverComponents(target.dir, {
+      requireYarnLock: true,
+      maxDepth: target.maxDepth,
+    });
+    await checkDependencies(comps, {
+      concurrency: opts.concurrency,
+      timeout: opts.timeout,
+      onlyMissing: opts.onlyMissing,
+    });
+  });
+
+// Feature 4 - 组件库清单
+program
+  .command('catalog')
+  .description('列出组件库下每个组件的名称与版本')
+  .option('-c, --config <file>', '指定 sejuani.config.json')
+  .option('--components <dir>', '组件库根目录（覆盖配置）')
+  .option('--json', '以 JSON 输出', false)
+  .action(async (opts) => {
+    const config = loadConfig(opts.config);
+    const t = componentsTarget(config, opts);
+    const catalog = await buildCatalog(t.dir, t.maxDepth);
+    printCatalog(catalog, opts.json);
+  });
+
+// Feature 1 - who-uses
+program
+  .command('who-uses <component>')
+  .description('查询某组件被哪些工程使用')
+  .option('-c, --config <file>', '指定 sejuani.config.json')
+  .option('--projects <dir>', '工程根目录（覆盖配置）')
+  .option('--components <dir>', '组件库根目录（覆盖配置）')
+  .action(async (component: string, opts) => {
+    const config = loadConfig(opts.config);
+    const projT = projectsTarget(config, opts);
+    const compT = componentsTarget(config, opts);
+    const projects = await discoverComponents(projT.dir, { maxDepth: projT.maxDepth });
+    const catalog = await buildCatalog(compT.dir, compT.maxDepth);
+    printProjectsUsing(component, projects, catalog);
+  });
+
+// Feature 2 - project-deps
+program
+  .command('project-deps <project>')
+  .description('查询某工程用了组件库中的哪些组件')
+  .option('-c, --config <file>', '指定 sejuani.config.json')
+  .option('--projects <dir>', '工程根目录（覆盖配置）')
+  .option('--components <dir>', '组件库根目录（覆盖配置）')
+  .action(async (project: string, opts) => {
+    const config = loadConfig(opts.config);
+    const projT = projectsTarget(config, opts);
+    const compT = componentsTarget(config, opts);
+    const projects = await discoverComponents(projT.dir, { maxDepth: projT.maxDepth });
+    const catalog = await buildCatalog(compT.dir, compT.maxDepth);
+    printComponentsOfProject(project, projects, catalog);
+  });
+
+// Feature 3 - usage 统计
+program
+  .command('usage')
+  .description('统计所有工程对组件库中组件的使用情况')
+  .option('-c, --config <file>', '指定 sejuani.config.json')
+  .option('--projects <dir>', '工程根目录（覆盖配置）')
+  .option('--components <dir>', '组件库根目录（覆盖配置）')
+  .option('--json', '以 JSON 输出', false)
+  .action(async (opts) => {
+    const config = loadConfig(opts.config);
+    const projT = projectsTarget(config, opts);
+    const compT = componentsTarget(config, opts);
+    const projects = await discoverComponents(projT.dir, { maxDepth: projT.maxDepth });
+    const catalog = await buildCatalog(compT.dir, compT.maxDepth);
+    printUsageSummary(projects, catalog, opts.json);
+  });
+
+// Feature 5 - upgrade
+program
+  .command('upgrade')
+  .description('按组件库 catalog 的精确版本升级工程内组件依赖')
+  .option('-c, --config <file>', '指定 sejuani.config.json')
+  .option('--projects <dir>', '工程根目录（覆盖配置）')
+  .option('--components <dir>', '组件库根目录（覆盖配置）')
+  .option('--dry-run', '仅预览不写入', false)
+  .option('--no-backup', '不生成 .bak 备份')
+  .option('-y, --yes', '跳过确认', false)
+  .option('--diff', '显示 diff 明细', false)
+  .action(async (opts) => {
+    const config = loadConfig(opts.config);
+    const projT = projectsTarget(config, opts);
+    const compT = componentsTarget(config, opts);
+    logger.step('扫描工程与组件库 ...');
+    const projects = await discoverComponents(projT.dir, { maxDepth: projT.maxDepth });
+    const catalog = await buildCatalog(compT.dir, compT.maxDepth);
+    logger.info(chalk.dim(`工程 ${projects.length} 个，catalog ${catalog.size} 个组件。`));
+    await runChanges(buildUpgradeChanges(projects, catalog), {
+      dryRun: opts.dryRun,
+      backup: opts.backup,
+      yes: opts.yes,
+      showDiff: opts.diff,
+    });
+    if (!opts.dryRun) {
+      logger.warn('升级仅改写 package.json，未改动 yarn.lock；请在各工程重新执行 yarn install。');
+    }
+  });
+
+// Feature F - guide 中文手册
+program
+  .command('guide')
+  .description('打印完整中文使用手册')
+  .action(() => {
+    printGuide();
+  });
+
+// Feature F - 顶层帮助：前置 banner + 后置分组总览/全局选项/示例
+program.addHelpText(
+  'beforeAll',
+  `
+${chalk.bold.cyan('Sejuani')} ${chalk.dim('(sjn)')} · 前端工程 / 组件批量与依赖治理终端工具
+${chalk.dim('扫描工程(projects)与组件库(components)，批量编辑 package.json / yarn.lock，并提供仓同步与依赖治理。')}
+`
+);
+
+program.addHelpText(
+  'after',
+  `
+${chalk.bold('命令分类:')}
+  ${chalk.bold('交互式')}    start(默认)                     启动向导，菜单化驱动全部能力
+  ${chalk.bold('批量编辑')}  replace-url / set-version /       写操作，均走预览→确认→.bak备份→写入
+              set-name / upgrade / link / sync
+  ${chalk.bold('依赖治理')}  registries / check-deps           只读，枚举仓库 / 校验依赖可用性
+  ${chalk.bold('查询统计')}  catalog / who-uses /              只读，组件清单 / 反查 / 用量统计
+              project-deps / usage
+  ${chalk.bold('帮助')}      guide                             打印完整中文手册
+
+${chalk.bold('通用选项:')}
+  -c, --config <file>   指定 sejuani.config.json（默认就近向上查找，无则用内置默认）
+  -d, --dir <dir>       直接指定扫描目录（优先级最高）
+  --projects <dir>      工程根目录（覆盖配置）
+  --components <dir>    组件库根目录（覆盖配置）
+  ${chalk.dim('扫描目标优先级：--dir > --projects > --components > 配置/内置默认。')}
+
+${chalk.bold('写操作安全选项（replace-url / set-version / set-name / upgrade）:')}
+  --dry-run   仅预览不写入      -y, --yes   跳过确认
+  --no-backup 不生成 .bak 备份   --diff      展示逐行 diff
+
+${chalk.bold('典型示例:')}
+  ${chalk.dim('# 交互式向导（推荐）')}
+  $ sjn
+
+  ${chalk.dim('# 组件库清单 / 用量统计 / 反查')}
+  $ sjn catalog
+  $ sjn usage
+  $ sjn who-uses @f6p/account-book-shop
+  $ sjn project-deps my-app
+
+  ${chalk.dim('# 升级工程内组件到 catalog 精确版本（先干跑）')}
+  $ sjn upgrade --dry-run --diff
+  $ sjn upgrade -y
+
+  ${chalk.dim('# 依赖治理')}
+  $ sjn registries --by-component
+  $ sjn check-deps --only-missing
+
+  ${chalk.dim('# 仓同步（先干跑查看命令）')}
+  $ sjn sync --dry-run
+
+  ${chalk.dim('# 指定配置 / 临时换扫描路径')}
+  $ sjn usage -c ./sejuani.config.json
+  $ sjn catalog --components /path/to/lib-workspace
+
+  ${chalk.dim('# 完整手册')}
+  $ sjn guide
+`
+);
+
+function printGuide(): void {
+  const g = `
+${chalk.bold.cyan('Sejuani (sjn) · 使用手册')}
+批量管理前端工程 / 组件的 package.json、yarn.lock，并提供仓同步与依赖治理。
+
+${chalk.bold('■ 配置标准（替代 rh.toml）')}
+  就近查找 sejuani.config.json（cwd 向上），或用 --config <file> 指定；无则用内置默认。
+  结构:
+    {
+      "registries": { "pack": "<拉取源>", "publish": "<发布目标>" },
+      "roots": {
+        "projects":   { "root": "<工程根>",   "packagesDir": "workspace", "depth": 1 },
+        "components": { "root": "<组件库根>", "packagesDir": "workspace", "depth": 1 }
+      }
+    }
+  约定：若 <root>/<packagesDir> 存在则扫描它并用 depth，否则直接扫描 <root>。
+
+${chalk.bold('■ 预设路径 / 目录覆盖')}
+  各命令支持 --config、--dir、--projects <dir>、--components <dir>；未指定则回退配置/内置默认。
+  交互式向导可在「工程 / 组件库 / 手动输入」间选择扫描范围。
+
+${chalk.bold('■ 安全模式')}
+  所有写操作（replace-url / set-version / set-name / upgrade）走「预览 → 确认 → .bak 备份 → 写入」。
+  --dry-run 仅预览；-y 跳过确认；--no-backup 不备份；--diff 显示逐行 diff。
+
+${chalk.bold('■ 批量编辑命令')}
+  replace-url  批量替换 yarn.lock 中 resolved 的 URL 片段（-f/--from, -t/--to）
+  set-version  批量改 package.json version（-b bump 或 -t 指定值，保留 -后缀）
+  set-name     批量改 package.json name（--find/--replace 或 -t 固定值）
+  link         把选定组件以软链聚合到虚拟空间（-i/--into）
+  sync         仓同步：npm pack → npm publish → 清理 tgz（--pack-registry/--publish-registry）
+  upgrade      按组件库 catalog 精确版本升级工程内组件依赖（不改 yarn.lock）
+
+${chalk.bold('■ 依赖治理 / 查询命令（只读）')}
+  registries          枚举 yarn.lock 中的所有仓库（--by-component 展开组件）
+  check-deps          校验依赖 URL 是否可访问（--concurrency/--timeout/--only-missing）
+  catalog             列出组件库下每个组件名称+版本（--json）
+  who-uses <组件>     查询某组件被哪些工程使用
+  project-deps <工程> 查询某工程用了哪些组件（含可升级标记）
+  usage               全工程组件用量统计 + 未使用组件清单（--json）
+
+${chalk.bold('■ 常见组合')}
+  1) 查看组件库有哪些组件及版本:        sjn catalog
+  2) 看某组件谁在用:                    sjn who-uses @f6p/xxx
+  3) 升级所有工程组件到最新精确版本:    sjn upgrade --dry-run --diff  →  sjn upgrade -y
+  4) 换源前先排查仓库与可用性:          sjn registries && sjn check-deps --only-missing
+  5) 组件发布到 nexus:                  sjn sync --dry-run  →  sjn sync -y
+
+${chalk.dim('提示：升级后需在各工程重新执行 yarn install 以同步 yarn.lock。')}
+`;
+  logger.info(g);
+}
+
+program.parseAsync(process.argv).catch((err) => {
+  logger.error(err instanceof Error ? err.message : String(err));
+  process.exit(1);
+});

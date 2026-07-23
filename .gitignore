@@ -1,0 +1,14 @@
+# 依赖与构建产物
+node_modules/
+dist/
+
+# 备份与临时
+*.bak
+.vtmp/
+.fixture/
+
+# 系统 / 编辑器
+.DS_Store
+*.log
+.idea/
+.vscode/
