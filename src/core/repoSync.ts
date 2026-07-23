@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 import inquirer from 'inquirer';
 import { Component } from '../types';
-import { runCommand, formatCommand } from './exec';
+import { runCommand, runCommandStream, formatCommand } from './exec';
 import { chalk, logger } from '../utils/logger';
 
 export interface SyncOptions {
@@ -34,6 +34,11 @@ interface SyncItemResult {
  */
 function expectedTgzName(pkgName: string, pkgVersion: string): string {
   return `${pkgName.replace(/^@/, '').replace(/\//g, '-')}-${pkgVersion}.tgz`;
+}
+
+/** 转义字符串中的正则元字符，用于构造精确匹配的成功行正则 */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**
@@ -172,14 +177,20 @@ export async function syncComponents(
       continue;
     }
 
-    // publish：同样透传 stdio，便于看到进度/错误并响应可能的认证提示
+    // publish：流式执行，实时转发输出；npm 发布到私有源(Nexus)常在上传成功后
+    // 因保持连接不退出而卡死，这里在确认成功/长时间无输出后主动结束子进程，避免整体挂起。
     logger.info(
       '  ' + chalk.dim('$ ') + chalk.cyan(`npm publish ${path.basename(tgzPath)} --registry=${opts.publishRegistry}`)
     );
-    const pubRes = runCommand(
+    const successRe = new RegExp(`\\+\\s+${escapeRegExp(spec)}`);
+    const pubRes = await runCommandStream(
       'npm',
       ['publish', tgzPath, `--registry=${opts.publishRegistry}`],
-      { cwd: workDir, inherit: true }
+      {
+        cwd: workDir,
+        successPattern: successRe,
+        idleAfter: { pattern: /Publishing to /, idleMs: 45000 },
+      }
     );
 
     // 清理 tgz（无论 publish 成功与否）
@@ -189,13 +200,35 @@ export async function syncComponents(
       /* ignore */
     }
 
-    if (!pubRes.ok) {
+    // 子进程非正常退出且未被我们主动结束 → 真实失败
+    if (!pubRes.ok && !pubRes.settledEarly) {
       results.push({ component: c.name, spec, ok: false, reason: `publish 失败: exit ${pubRes.code}` });
       logger.error(`  publish 失败（exit ${pubRes.code}），请检查上方 npm 输出`);
       continue;
     }
-    results.push({ component: c.name, spec, ok: true });
-    logger.success(`  完成 ${spec}`);
+
+    // 看到成功行(+ pkg@version) → 确定成功
+    if (pubRes.sawSuccess) {
+      results.push({ component: c.name, spec, ok: true });
+      if (pubRes.settledEarly) logger.info(chalk.dim('  npm 发布成功后未自行退出（私有源保持连接），已自动结束该子进程'));
+      logger.success(`  完成 ${spec}`);
+      continue;
+    }
+
+    // 未见成功行但被看门狗结束 → 用 npm view 到发布源核对是否真的发上去了
+    logger.info(chalk.dim('  npm 未打印成功行，正在向发布源核对是否已发布…'));
+    const view = runCommand(
+      'npm',
+      ['view', spec, 'version', `--registry=${opts.publishRegistry}`],
+      { cwd: workDir, timeout: 20000 }
+    );
+    if (view.stdout.includes(c.pkgVersion!)) {
+      results.push({ component: c.name, spec, ok: true });
+      logger.success(`  完成 ${spec}（已在发布源核对到该版本）`);
+    } else {
+      results.push({ component: c.name, spec, ok: false, reason: 'publish 结果未确认（发布源未核对到该版本）' });
+      logger.warn('  publish 结果未确认：发布源暂未查到该版本，请稍后到 Nexus 核对或重试');
+    }
   }
 
   // 清理临时工作目录
