@@ -15,6 +15,7 @@ import { BumpType } from './core/version';
 import { chalk, logger } from './utils/logger';
 import { loadConfig, resolveScanTarget } from './core/configLoader';
 import { SejuaniConfig } from './config';
+import { setActiveDomain } from './core/domainState';
 import { ScanTarget } from './ui/select';
 import { syncComponents } from './core/repoSync';
 import { printRegistries } from './core/registries';
@@ -194,14 +195,13 @@ program
     });
   });
 
-// Feature A - 仓同步
+// Feature A - 仓同步（仅针对组件）
 program
   .command('sync')
-  .description('仓同步：对每个组件 npm pack → npm publish → 清理 tgz')
+  .description('仓同步（仅组件）：对每个组件 npm pack → npm publish → 清理 tgz')
   .option('-c, --config <file>', '指定 sejuani.config.json')
   .option('-d, --dir <dir>', '扫描目录（覆盖配置）')
-  .option('--projects <dir>', '工程根目录（覆盖配置）')
-  .option('--components <dir>', '组件库根目录（覆盖配置，默认同步组件库）')
+  .option('--components <dir>', '组件库根目录（覆盖配置）')
   .option('--pack-registry <url>', 'pack 源 registry（覆盖配置）')
   .option('--publish-registry <url>', 'publish 目标 registry（覆盖配置）')
   .option('--work-dir <dir>', '执行 pack/publish 的工作目录（默认临时目录）')
@@ -209,7 +209,7 @@ program
   .option('-y, --yes', '跳过确认', false)
   .action(async (opts) => {
     const config = loadConfig(opts.config);
-    const target = pickScanTarget(config, opts, 'components');
+    const target = opts.dir ? { dir: path.resolve(opts.dir) } : componentsTarget(config, opts);
     const comps = await discoverComponents(target.dir, { maxDepth: target.maxDepth });
     await syncComponents(comps, {
       packRegistry: opts.packRegistry ?? config.registries.pack,
@@ -330,10 +330,11 @@ program
 // Feature 5 - upgrade
 program
   .command('upgrade')
-  .description('按组件库 catalog 的精确版本升级工程内组件依赖')
+  .description('按组件库 catalog 的精确版本升级工程内组件依赖（默认全量，--only 指定组件）')
   .option('-c, --config <file>', '指定 sejuani.config.json')
   .option('--projects <dir>', '工程根目录（覆盖配置）')
   .option('--components <dir>', '组件库根目录（覆盖配置）')
+  .option('-o, --only <names>', '仅升级指定组件（逗号分隔多个，如 @f6p/a,@f6p/b）')
   .option('--dry-run', '仅预览不写入', false)
   .option('--no-backup', '不生成 .bak 备份')
   .option('-y, --yes', '跳过确认', false)
@@ -345,8 +346,16 @@ program
     logger.step('扫描工程与组件库 ...');
     const projects = await discoverComponents(projT.dir, { maxDepth: projT.maxDepth });
     const catalog = await buildCatalog(compT.dir, compT.maxDepth);
-    logger.info(chalk.dim(`工程 ${projects.length} 个，catalog ${catalog.size} 个组件。`));
-    await runChanges(buildUpgradeChanges(projects, catalog), {
+    const only = opts.only
+      ? String(opts.only).split(',').map((s: string) => s.trim()).filter(Boolean)
+      : undefined;
+    logger.info(
+      chalk.dim(
+        `工程 ${projects.length} 个，catalog ${catalog.size} 个组件。` +
+          (only ? `仅升级指定 ${only.length} 个组件。` : '全量升级。')
+      )
+    );
+    await runChanges(buildUpgradeChanges(projects, catalog, { only }), {
       dryRun: opts.dryRun,
       backup: opts.backup,
       yes: opts.yes,
@@ -363,6 +372,29 @@ program
   .description('打印完整中文使用手册')
   .action(() => {
     printGuide();
+  });
+
+// 域设置：查看 / 切换 chery|foton|saas
+program
+  .command('domain [name]')
+  .description('查看或切换域（chery/foton/saas）；切换后影响工程/组件仓库与 registry')
+  .option('-c, --config <file>', '指定 sejuani.config.json')
+  .action((name: string | undefined, opts) => {
+    const config = loadConfig(opts.config);
+    if (!name) {
+      printDomains(config);
+      return;
+    }
+    if (!config.domains[name]) {
+      logger.error(`未知域: ${name}。可选: ${Object.keys(config.domains).join(' / ')}`);
+      process.exitCode = 1;
+      return;
+    }
+    setActiveDomain(name);
+    const d = config.domains[name];
+    logger.success(`已切换到域 ${chalk.bold(name)}（${d.label}）`);
+    logger.info(chalk.dim(`  工程根: ${d.roots.projects.root}`));
+    logger.info(chalk.dim(`  组件库: ${d.roots.components.root}`));
   });
 
 // Feature F - 顶层帮助：前置 banner + 后置分组总览/全局选项/示例
@@ -385,6 +417,7 @@ ${chalk.bold('命令分类:')}
   ${chalk.bold('查询统计')}  catalog / who-uses /              只读，组件清单 / 反查 / 用量统计
               project-deps / usage
   ${chalk.bold('帮助')}      guide                             打印完整中文手册
+  ${chalk.bold('域设置')}  domain [name]                     查看/切换域 chery·foton·saas
 
 ${chalk.bold('通用选项:')}
   -c, --config <file>   指定 sejuani.config.json（默认就近向上查找，无则用内置默认）
@@ -424,8 +457,25 @@ ${chalk.bold('典型示例:')}
 
   ${chalk.dim('# 完整手册')}
   $ sjn guide
+
+${chalk.bold('域(domain):')}
+  chery(奇瑞) / foton(福田) / saas 各对应不同的工程仓库与组件仓库。
+  ${chalk.dim('sjn domain            # 查看当前域与列表')}
+  ${chalk.dim('sjn domain foton      # 切换到福田域（持久化到 ~/.sejuani/state.json）')}
 `
 );
+
+function printDomains(config: SejuaniConfig): void {
+  logger.info(chalk.bold('可用域:'));
+  for (const [key, d] of Object.entries(config.domains)) {
+    const active = key === config.activeDomain;
+    const mark = active ? chalk.green('● 当前') : chalk.dim('○    ');
+    logger.info(`  ${mark} ${chalk.bold(key)}  ${chalk.dim(d.label)}`);
+    logger.info(chalk.dim(`         工程 ${d.roots.projects.root}`));
+    logger.info(chalk.dim(`         组件 ${d.roots.components.root}`));
+  }
+  logger.info(chalk.dim('\n切换: sjn domain <name>   例: sjn domain foton'));
+}
 
 function printGuide(): void {
   const g = `

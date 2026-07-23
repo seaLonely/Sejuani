@@ -1,6 +1,10 @@
 /**
  * Sejuani 标准（替代 rh.toml）：内置默认 registry 与工程/组件根路径。
  * 可被 sejuani.config.json 覆盖（见 core/configLoader.ts）。
+ *
+ * 域(domain)：chery(奇瑞) / foton(福田) / saas。每个域各自对应一套
+ * 工程仓库、组件仓库与 registry。切换域后，加载配置时会把该域的
+ * roots/registries 展开到顶层，供所有流程直接使用。
  */
 
 export interface RootConfig {
@@ -19,32 +23,95 @@ export interface RegistriesConfig {
   publish: string;
 }
 
-export interface SejuaniConfig {
-  registries: RegistriesConfig;
-  roots: {
-    projects: RootConfig;
-    components: RootConfig;
-  };
+export interface DomainRoots {
+  projects: RootConfig;
+  components: RootConfig;
 }
 
-/** 内置默认配置：当前机器上的两条 rhea 路径 */
-export const DEFAULT_CONFIG: SejuaniConfig = {
-  registries: {
-    pack: 'https://npm.f6yc.com',
-    publish: 'http://nexus-ditc.mychery.com/repository/chery-sumeida-npm/',
-  },
-  roots: {
+/** 一个业务域的完整配置：显示名 + registry + 工程/组件根 */
+export interface DomainConfig {
+  /** 展示名，如「奇瑞 (chery)」 */
+  label: string;
+  registries: RegistriesConfig;
+  roots: DomainRoots;
+}
+
+/** 支持的域标识 */
+export type DomainKey = 'chery' | 'foton' | 'saas';
+
+export interface SejuaniConfig {
+  /** 生效 registry（= 当前域的 registries，加载时展开） */
+  registries: RegistriesConfig;
+  /** 生效 roots（= 当前域的 roots，加载时展开） */
+  roots: DomainRoots;
+  /** 全部域配置 */
+  domains: Record<string, DomainConfig>;
+  /** 当前域标识（可被 ~/.sejuani/state.json 覆盖） */
+  activeDomain: string;
+}
+
+const WORKSPACE_ROOT = '/Users/cherish/Documents/workSpace/project';
+
+/** 按域名生成一套默认 roots（<domain>-fed-workspce-rhea / <domain>-fed-lib-workspce-rhea） */
+function defaultRoots(domain: string): DomainRoots {
+  return {
     projects: {
-      root: '/Users/cherish/Documents/workSpace/project/chery-fed-workspce-rhea',
+      root: `${WORKSPACE_ROOT}/${domain}-fed-workspce-rhea`,
       packagesDir: 'workspace',
       depth: 1,
     },
     components: {
-      root: '/Users/cherish/Documents/workSpace/project/chery-fed-lib-workspce-rhea',
+      root: `${WORKSPACE_ROOT}/${domain}-fed-lib-workspce-rhea`,
       packagesDir: 'workspace',
       depth: 1,
     },
+  };
+}
+
+const CHERY_REGISTRIES: RegistriesConfig = {
+  pack: 'https://npm.f6yc.com',
+  publish: 'http://nexus-ditc.mychery.com/repository/chery-sumeida-npm/',
+};
+
+/** 内置各域配置。foton/saas 的路径与 publish 源为占位默认，可用 sejuani.config.json 覆盖。 */
+export const DOMAINS: Record<DomainKey, DomainConfig> = {
+  chery: {
+    label: '奇瑞 (chery)',
+    registries: CHERY_REGISTRIES,
+    roots: {
+      projects: {
+        root: `${WORKSPACE_ROOT}/chery-fed-workspce-rhea`,
+        packagesDir: 'workspace',
+        depth: 1,
+      },
+      components: {
+        root: `${WORKSPACE_ROOT}/chery-fed-lib-workspce-rhea`,
+        packagesDir: 'workspace',
+        depth: 1,
+      },
+    },
   },
+  foton: {
+    label: '福田 (foton)',
+    registries: CHERY_REGISTRIES,
+    roots: defaultRoots('foton'),
+  },
+  saas: {
+    label: 'SaaS (saas)',
+    registries: CHERY_REGISTRIES,
+    roots: defaultRoots('saas'),
+  },
+};
+
+/** 默认域 */
+export const DEFAULT_DOMAIN: DomainKey = 'chery';
+
+/** 内置默认配置：默认展开为 chery 域 */
+export const DEFAULT_CONFIG: SejuaniConfig = {
+  registries: DOMAINS[DEFAULT_DOMAIN].registries,
+  roots: DOMAINS[DEFAULT_DOMAIN].roots,
+  domains: DOMAINS,
+  activeDomain: DEFAULT_DOMAIN,
 };
 
 export const CONFIG_FILENAME = 'sejuani.config.json';

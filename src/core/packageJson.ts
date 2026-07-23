@@ -99,13 +99,18 @@ export interface DependencyEdit extends PackageEdit {
  * 按 catalog 精确版本升级工程内的组件依赖（Feature 5）。
  * 遍历 dependencies + devDependencies，若依赖名在 catalog 中且当前 spec
  * 与 catalog 版本不同，则写成精确版本（catalog 原样，忽略 ^/~ 前缀）。
+ * opts.only 非空时，仅升级列表中的组件名（按需升级）。
  */
 export function editDependencies(
   packageJsonPath: string,
   catalog: Catalog,
-  opts: { sections?: Array<'dependencies' | 'devDependencies'> } = {}
+  opts: {
+    sections?: Array<'dependencies' | 'devDependencies'>;
+    only?: Iterable<string>;
+  } = {}
 ): DependencyEdit {
   const sections = opts.sections ?? ['dependencies', 'devDependencies'];
+  const onlySet = opts.only ? new Set(opts.only) : undefined;
   const before = fs.readFileSync(packageJsonPath, 'utf8');
   const hadTrailingNewline = before.endsWith('\n');
   const indent = detectIndent(before);
@@ -116,6 +121,7 @@ export function editDependencies(
     const block = pkg[section];
     if (!block || typeof block !== 'object') continue;
     for (const name of Object.keys(block)) {
+      if (onlySet && !onlySet.has(name)) continue; // 指定模式：只改选中的组件
       const item = catalog.get(name);
       if (!item || !item.version) continue;
       const currentRange = String(block[name]);

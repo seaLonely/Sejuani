@@ -25,6 +25,7 @@ import { BumpType } from '../core/version';
 import { loadConfig } from '../core/configLoader';
 import { resolveScanTarget } from '../core/configLoader';
 import { SejuaniConfig } from '../config';
+import { setActiveDomain } from '../core/domainState';
 
 type Action =
   | 'replace-url'
@@ -39,6 +40,7 @@ type Action =
   | 'project-deps'
   | 'usage'
   | 'upgrade'
+  | 'domain'
   | 'quit';
 
 async function askDryAndBackup(): Promise<{ dryRun: boolean; backup: boolean }> {
@@ -61,6 +63,7 @@ async function pickComponents(
   requireYarnLock = false
 ): Promise<Component[]> {
   const target = await promptRoot(config);
+  if (!target) return [];
   return discoverAndSelect(target, { requireYarnLock });
 }
 
@@ -145,6 +148,7 @@ async function flowSetName(config: SejuaniConfig): Promise<void> {
 
 async function flowLink(config: SejuaniConfig): Promise<void> {
   const target = await promptRoot(config);
+  if (!target) return;
   const comps = await discoverAndSelect(target);
   if (comps.length === 0) return;
   const { into, force, dryRun } = await inquirer.prompt<{ into: string; force: boolean; dryRun: boolean }>([
@@ -162,7 +166,9 @@ async function flowLink(config: SejuaniConfig): Promise<void> {
 }
 
 async function flowSync(config: SejuaniConfig): Promise<void> {
-  const comps = await pickComponents(config);
+  // 仓同步仅针对组件库（pack→publish 组件），不涉及工程。
+  const t = resolveScanTarget(config.roots.components);
+  const comps = await discoverAndSelect(t);
   if (comps.length === 0) return;
   const { packRegistry, publishRegistry, dryRun } = await inquirer.prompt<{
     packRegistry: string;
@@ -183,6 +189,7 @@ async function flowSync(config: SejuaniConfig): Promise<void> {
 
 async function flowRegistries(config: SejuaniConfig): Promise<void> {
   const target = await promptRoot(config);
+  if (!target) return;
   const comps = await discoverComponents(target.dir, { requireYarnLock: true, maxDepth: target.maxDepth });
   const { byComponent } = await inquirer.prompt<{ byComponent: boolean }>([
     { type: 'confirm', name: 'byComponent', message: '展开每个仓库涉及的组件?', default: false },
@@ -192,6 +199,7 @@ async function flowRegistries(config: SejuaniConfig): Promise<void> {
 
 async function flowCheckDeps(config: SejuaniConfig): Promise<void> {
   const target = await promptRoot(config);
+  if (!target) return;
   const comps = await discoverComponents(target.dir, { requireYarnLock: true, maxDepth: target.maxDepth });
   const { concurrency, timeout, onlyMissing } = await inquirer.prompt<{
     concurrency: number;
@@ -249,19 +257,85 @@ async function flowUpgrade(config: SejuaniConfig): Promise<void> {
   const projects = await discoverComponents(projT.dir, { maxDepth: projT.maxDepth });
   const catalog = await buildCatalog(compT.dir, compT.maxDepth);
   logger.info(chalk.dim(`工程 ${projects.length} 个，catalog ${catalog.size} 个组件。`));
+
+  const { mode } = await inquirer.prompt<{ mode: 'all' | 'pick' | 'back' }>([
+    {
+      type: 'list',
+      name: 'mode',
+      message: '升级方式:',
+      choices: [
+        { name: '全量升级（工程内所有组件依赖 → catalog 精确版）', value: 'all' },
+        { name: '指定组件升级（选择一个或多个）', value: 'pick' },
+        new inquirer.Separator(),
+        { name: '↩ 返回', value: 'back' },
+      ],
+    },
+  ]);
+  if (mode === 'back') return;
+
+  let only: string[] | undefined;
+  if (mode === 'pick') {
+    const items = [...catalog.values()].sort((a, b) => a.name.localeCompare(b.name));
+    if (items.length === 0) {
+      logger.warn('组件库为空，无可选组件。');
+      return;
+    }
+    const { picked } = await inquirer.prompt<{ picked: string[] }>([
+      {
+        type: 'checkbox',
+        name: 'picked',
+        message: '选择要升级的组件（空格选/取消，回车确认）:',
+        pageSize: 20,
+        loop: false,
+        choices: items.map((i) => ({ name: `${i.name}  ${chalk.dim(i.version || '?')}`, value: i.name })),
+      },
+    ]);
+    if (picked.length === 0) {
+      logger.warn('未选择任何组件，已取消。');
+      return;
+    }
+    only = picked;
+  }
+
   const { dryRun, backup } = await askDryAndBackup();
-  await runChanges(buildUpgradeChanges(projects, catalog), {
+  await runChanges(buildUpgradeChanges(projects, catalog, { only }), {
     dryRun,
     backup,
     yes: false,
     showDiff: true,
   });
+  if (!dryRun) {
+    logger.warn('升级仅改写 package.json，未改动 yarn.lock；请在各工程重新执行 yarn install。');
+  }
+}
+
+/** 域设置：展示当前域并切换，返回被选中的域 key */
+async function flowDomain(config: SejuaniConfig): Promise<string> {
+  const keys = Object.keys(config.domains);
+  const { picked } = await inquirer.prompt<{ picked: string }>([
+    {
+      type: 'list',
+      name: 'picked',
+      message: `选择域（当前: ${config.activeDomain}）:`,
+      default: config.activeDomain,
+      choices: keys.map((k) => ({
+        name: `${config.domains[k].label}  ${chalk.dim(config.domains[k].roots.projects.root)}`,
+        value: k,
+      })),
+    },
+  ]);
+  setActiveDomain(picked);
+  logger.success(`已切换到域 ${chalk.bold(picked)}（${config.domains[picked].label}）`);
+  return picked;
 }
 
 /** 交互式向导主流程 */
 export async function runWizard(configPath?: string): Promise<void> {
+  let config = loadConfig(configPath);
   logger.title('Sejuani · 前端工程/组件批量与依赖治理工具');
-  const config = loadConfig(configPath);
+  logger.info(
+    chalk.dim(`当前域: ${chalk.cyan(config.activeDomain)}（${config.domains[config.activeDomain]?.label ?? '?'}）  可在菜单「域设置」切换`)
+  );
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
@@ -273,19 +347,21 @@ export async function runWizard(configPath?: string): Promise<void> {
         pageSize: 20,
         choices: [
           new inquirer.Separator('— 批量编辑 —'),
-          { name: '替换 yarn.lock 中的 resolved URL', value: 'replace-url' },
-          { name: '修改 package.json 的 version', value: 'set-version' },
-          { name: '修改 package.json 的 name', value: 'set-name' },
-          { name: '创建虚拟空间（软链聚合）', value: 'link' },
-          { name: '仓同步（pack→publish→清理 tgz）', value: 'sync' },
-          new inquirer.Separator('— 依赖治理/查询 —'),
-          { name: '枚举 yarn.lock 中的仓库', value: 'registries' },
-          { name: '校验依赖是否存在（curl）', value: 'check-deps' },
-          { name: '组件库清单（名称+版本）', value: 'catalog' },
-          { name: '组件被哪些工程使用', value: 'who-uses' },
-          { name: '工程用了哪些组件', value: 'project-deps' },
-          { name: '全工程组件用量统计', value: 'usage' },
-          { name: '升级工程内组件版本（按 catalog 精确版）', value: 'upgrade' },
+          { name: `替换 resolved URL  ${chalk.dim('replace-url · yarn.lock')}`, value: 'replace-url' },
+          { name: `修改版本号  ${chalk.dim('set-version · package.json')}`, value: 'set-version' },
+          { name: `修改包名  ${chalk.dim('set-name · package.json')}`, value: 'set-name' },
+          { name: `创建虚拟空间  ${chalk.dim('link · 软链聚合')}`, value: 'link' },
+          { name: `仓库发布同步  ${chalk.dim('sync · pack→publish')}`, value: 'sync' },
+          new inquirer.Separator('— 依赖治理 / 查询 —'),
+          { name: `枚举仓库源  ${chalk.dim('registries · yarn.lock')}`, value: 'registries' },
+          { name: `校验依赖可达性  ${chalk.dim('check-deps')}`, value: 'check-deps' },
+          { name: `组件库清单  ${chalk.dim('catalog · 名称+版本')}`, value: 'catalog' },
+          { name: `组件反查工程  ${chalk.dim('who-uses')}`, value: 'who-uses' },
+          { name: `工程依赖清单  ${chalk.dim('project-deps')}`, value: 'project-deps' },
+          { name: `组件用量统计  ${chalk.dim('usage')}`, value: 'usage' },
+          { name: `升级组件版本  ${chalk.dim('upgrade · 按 catalog')}`, value: 'upgrade' },
+          new inquirer.Separator('— 环境 —'),
+          { name: `域设置 / 切换  ${chalk.dim('domain · chery/foton/saas')}`, value: 'domain' },
           new inquirer.Separator(),
           { name: '退出', value: 'quit' },
         ],
@@ -294,7 +370,10 @@ export async function runWizard(configPath?: string): Promise<void> {
 
     if (action === 'quit') break;
     try {
-      if (action === 'replace-url') await flowReplaceUrl(config);
+      if (action === 'domain') {
+        await flowDomain(config);
+        config = loadConfig(configPath); // 重载以应用新域的 roots/registries
+      } else if (action === 'replace-url') await flowReplaceUrl(config);
       else if (action === 'set-version') await flowSetVersion(config);
       else if (action === 'set-name') await flowSetName(config);
       else if (action === 'link') await flowLink(config);

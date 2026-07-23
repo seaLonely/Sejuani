@@ -4,6 +4,7 @@ import { URL } from 'url';
 import { Component } from '../types';
 import { readYarnLock } from './lockParser';
 import { chalk, logger } from '../utils/logger';
+import { createProgress } from '../utils/progress';
 
 export interface CheckTarget {
   url: string;
@@ -99,11 +100,12 @@ async function checkOne(target: CheckTarget, timeout: number): Promise<CheckResu
   }
 }
 
-/** 简单并发池 */
+/** 简单并发池（onDone 在每个任务完成后回调，用于进度） */
 async function runPool<T, R>(
   items: T[],
   worker: (item: T) => Promise<R>,
-  concurrency: number
+  concurrency: number,
+  onDone?: () => void
 ): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let idx = 0;
@@ -111,6 +113,7 @@ async function runPool<T, R>(
     while (idx < items.length) {
       const cur = idx++;
       results[cur] = await worker(items[cur]);
+      if (onDone) onDone();
     }
   });
   await Promise.all(runners);
@@ -132,7 +135,14 @@ export async function checkDependencies(
   }
   logger.step(`共 ${targets.length} 个唯一依赖 URL，并发 ${opts.concurrency}，超时 ${opts.timeout}ms ...`);
 
-  const results = await runPool(targets, (t) => checkOne(t, opts.timeout), opts.concurrency);
+  const bar = createProgress(targets.length, '  校验 ');
+  const results = await runPool(
+    targets,
+    (t) => checkOne(t, opts.timeout),
+    opts.concurrency,
+    () => bar.tick(1)
+  );
+  bar.stop();
 
   const counts: Record<CheckStatus, number> = { exists: 0, missing: 0, auth: 0, error: 0 };
   for (const r of results) counts[r.status] += 1;

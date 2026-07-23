@@ -99,9 +99,10 @@ export async function syncComponents(
   const usingTemp = !opts.workDir;
 
   const results: SyncItemResult[] = [];
+  let done = 0;
   for (const c of targets) {
     const spec = `${c.pkgName}@${c.pkgVersion}`;
-    logger.step(`处理 ${chalk.cyan(spec)}`);
+    logger.step(`[${++done}/${targets.length}] 处理 ${chalk.cyan(spec)}`);
 
     const packRes = runCommand(
       'npm',

@@ -3,9 +3,11 @@ import path from 'path';
 import {
   CONFIG_FILENAME,
   DEFAULT_CONFIG,
+  DEFAULT_DOMAIN,
   RootConfig,
   SejuaniConfig,
 } from '../config';
+import { getActiveDomainOverride } from './domainState';
 
 /** 从 startDir 向上逐级查找 sejuani.config.json */
 function findConfigFile(startDir: string): string | null {
@@ -34,21 +36,44 @@ function deepMerge<T>(base: T, override: Partial<T> | undefined): T {
 }
 
 /**
+ * 依「当前域」把该域的 roots/registries 展开到顶层。
+ * 优先级：~/.sejuani/state.json > config.activeDomain > 默认域。
+ * 若配置文件显式提供了顶层 roots/registries，则保留其显式值（不被域覆盖）。
+ */
+function applyActiveDomain(
+  config: SejuaniConfig,
+  explicit: { roots?: boolean; registries?: boolean } = {}
+): SejuaniConfig {
+  const key = getActiveDomainOverride() ?? config.activeDomain ?? DEFAULT_DOMAIN;
+  const domain = config.domains?.[key];
+  const next: SejuaniConfig = { ...config, activeDomain: key };
+  if (!domain) return next;
+  if (!explicit.roots) next.roots = domain.roots;
+  if (!explicit.registries) next.registries = domain.registries;
+  return next;
+}
+
+/**
  * 加载配置：显式 --config 优先，其次就近查找，最后回退内置默认。
+ * 加载后按当前域展开 roots/registries。
  */
 export function loadConfig(explicitPath?: string, startDir = process.cwd()): SejuaniConfig {
   const file = explicitPath
     ? path.resolve(explicitPath)
     : findConfigFile(startDir);
 
-  if (!file) return DEFAULT_CONFIG;
+  if (!file) return applyActiveDomain(DEFAULT_CONFIG);
   if (!fs.existsSync(file)) {
     throw new Error(`配置文件不存在: ${file}`);
   }
 
   try {
     const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<SejuaniConfig>;
-    return deepMerge(DEFAULT_CONFIG, raw);
+    const merged = deepMerge(DEFAULT_CONFIG, raw);
+    return applyActiveDomain(merged, {
+      roots: !!raw.roots,
+      registries: !!raw.registries,
+    });
   } catch (err) {
     throw new Error(`配置文件解析失败 ${file}: ${(err as Error).message}`);
   }

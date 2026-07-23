@@ -78,14 +78,16 @@ export function buildNameChanges(
   return result;
 }
 
-/** Feature 5: 按 catalog 精确版本升级工程内组件依赖 */
+/** Feature 5: 按 catalog 精确版本升级工程内组件依赖。only 非空时仅升级指定组件。 */
 export function buildUpgradeChanges(
   projects: Component[],
-  catalog: Catalog
+  catalog: Catalog,
+  opts: { only?: string[] } = {}
 ): ComponentChange[] {
+  const only = opts.only && opts.only.length > 0 ? opts.only : undefined;
   const result: ComponentChange[] = [];
   for (const p of projects) {
-    const edit = editDependencies(p.packageJsonPath, catalog);
+    const edit = editDependencies(p.packageJsonPath, catalog, { only });
     result.push({
       component: p,
       files: [
