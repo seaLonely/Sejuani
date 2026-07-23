@@ -46,6 +46,13 @@ export function catalogFromComponents(components: Component[]): Catalog {
   return catalog;
 }
 
+/** 导出为「名称 + 版本」数组（按 name 排序），供 --json 打印或写文件使用。 */
+export function catalogToJson(catalog: Catalog): { name: string; version: string }[] {
+  return [...catalog.values()]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((i) => ({ name: i.name, version: i.version }));
+}
+
 /** Feature 4: 打印组件库清单（名称 + 版本 + 目录） */
 export function printCatalog(catalog: Catalog, asJson: boolean): void {
   const items = [...catalog.values()].sort((a, b) => a.name.localeCompare(b.name));

@@ -8,6 +8,7 @@ import {
   SejuaniConfig,
 } from '../config';
 import { getActiveDomainOverride } from './domainState';
+import { getRegistryOverride } from './registryStore';
 
 /** 从 startDir 向上逐级查找 sejuani.config.json */
 function findConfigFile(startDir: string): string | null {
@@ -39,6 +40,7 @@ function deepMerge<T>(base: T, override: Partial<T> | undefined): T {
  * 依「当前域」把该域的 roots/registries 展开到顶层。
  * 优先级：~/.sejuani/state.json > config.activeDomain > 默认域。
  * 若配置文件显式提供了顶层 roots/registries，则保留其显式值（不被域覆盖）。
+ * 最后叠加 state.json 中按域持久化的 registry 覆盖（pack/publish），优先级最高。
  */
 function applyActiveDomain(
   config: SejuaniConfig,
@@ -47,9 +49,19 @@ function applyActiveDomain(
   const key = getActiveDomainOverride() ?? config.activeDomain ?? DEFAULT_DOMAIN;
   const domain = config.domains?.[key];
   const next: SejuaniConfig = { ...config, activeDomain: key };
-  if (!domain) return next;
-  if (!explicit.roots) next.roots = domain.roots;
-  if (!explicit.registries) next.registries = domain.registries;
+  if (domain) {
+    if (!explicit.roots) next.roots = domain.roots;
+    if (!explicit.registries) next.registries = domain.registries;
+  }
+  // 按域持久化的 registry 覆盖（sjn registry set-pack/set-publish），对 pack/publish 分别生效
+  const override = getRegistryOverride(key);
+  if (override && (override.pack || override.publish)) {
+    next.registries = {
+      ...next.registries,
+      ...(override.pack ? { pack: override.pack } : {}),
+      ...(override.publish ? { publish: override.publish } : {}),
+    };
+  }
   return next;
 }
 

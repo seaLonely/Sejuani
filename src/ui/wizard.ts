@@ -1,4 +1,5 @@
 import inquirer from 'inquirer';
+import fs from 'fs';
 import path from 'path';
 import { Component } from '../types';
 import { chalk, logger } from '../utils/logger';
@@ -15,7 +16,7 @@ import { createVirtualSpace } from '../core/link';
 import { syncComponents } from '../core/repoSync';
 import { printRegistries } from '../core/registries';
 import { checkDependencies } from '../core/depCheck';
-import { buildCatalog, printCatalog } from '../core/catalog';
+import { buildCatalog, catalogToJson, printCatalog } from '../core/catalog';
 import {
   printProjectsUsing,
   printComponentsOfProject,
@@ -26,6 +27,18 @@ import { loadConfig } from '../core/configLoader';
 import { resolveScanTarget } from '../core/configLoader';
 import { SejuaniConfig } from '../config';
 import { setActiveDomain } from '../core/domainState';
+import { getRegistryOverride, setRegistry, clearRegistryOverride } from '../core/registryStore';
+import { analyzeLayers, printLayers, toLayersJson, flattenLayersJson } from '../core/depsTree';
+import {
+  getVirtualSpaces,
+  getVirtualSpace,
+  saveVirtualSpace,
+  removeVirtualSpace,
+  resolveVsComponents,
+  membersFromComponents,
+  patchVirtualSpace,
+  VsMember,
+} from '../core/vsStore';
 
 type Action =
   | 'replace-url'
@@ -41,7 +54,10 @@ type Action =
   | 'project-deps'
   | 'usage'
   | 'upgrade'
+  | 'deps-tree'
+  | 'vs'
   | 'domain'
+  | 'registry'
   | 'quit';
 
 async function askDryAndBackup(): Promise<{ dryRun: boolean; backup: boolean }> {
@@ -254,7 +270,7 @@ async function flowRelease(config: SejuaniConfig): Promise<void> {
 async function flowRegistries(config: SejuaniConfig): Promise<void> {
   const target = await promptRoot(config);
   if (!target) return;
-  const comps = await discoverComponents(target.dir, { requireYarnLock: true, maxDepth: target.maxDepth });
+  const comps = await componentsFromTarget(target, { requireYarnLock: true });
   const { byComponent } = await inquirer.prompt<{ byComponent: boolean }>([
     { type: 'confirm', name: 'byComponent', message: '展开每个仓库涉及的组件?', default: false },
   ]);
@@ -264,7 +280,7 @@ async function flowRegistries(config: SejuaniConfig): Promise<void> {
 async function flowCheckDeps(config: SejuaniConfig): Promise<void> {
   const target = await promptRoot(config);
   if (!target) return;
-  const comps = await discoverComponents(target.dir, { requireYarnLock: true, maxDepth: target.maxDepth });
+  const comps = await componentsFromTarget(target, { requireYarnLock: true });
   const { concurrency, timeout, onlyMissing } = await inquirer.prompt<{
     concurrency: number;
     timeout: number;
@@ -282,6 +298,19 @@ async function flowCatalog(config: SejuaniConfig): Promise<void> {
   logger.step(`扫描组件库 ${chalk.cyan(t.dir)} ...`);
   const catalog = await buildCatalog(t.dir, t.maxDepth);
   printCatalog(catalog, false);
+  const { out } = await inquirer.prompt<{ out: string }>([
+    {
+      type: 'input',
+      name: 'out',
+      message: '导出名称+版本到 JSON 文件?（留空跳过）',
+      default: '',
+      filter: (v: string) => v.trim(),
+    },
+  ]);
+  if (out) {
+    fs.writeFileSync(path.resolve(out), JSON.stringify(catalogToJson(catalog), null, 2) + '\n');
+    logger.success(`已导出组件清单 JSON: ${path.resolve(out)}`);
+  }
 }
 
 async function flowWhoUses(config: SejuaniConfig): Promise<void> {
@@ -393,6 +422,327 @@ async function flowDomain(config: SejuaniConfig): Promise<string> {
   return picked;
 }
 
+/** registry 设置：按当前域分别设置 pack / publish（持久化，供 release·sync 使用） */
+async function flowRegistry(config: SejuaniConfig): Promise<void> {
+  const domain = config.activeDomain;
+  const base = config.domains[domain].registries;
+  const showCurrent = () => {
+    const ov = getRegistryOverride(domain) ?? {};
+    logger.info(chalk.dim(`当前域 ${domain}：`));
+    logger.info(`  pack    ${ov.pack ? chalk.green('[已设置] ') : chalk.dim('[域默认] ')}${chalk.cyan(ov.pack ?? base.pack)}`);
+    logger.info(`  publish ${ov.publish ? chalk.green('[已设置] ') : chalk.dim('[域默认] ')}${chalk.cyan(ov.publish ?? base.publish)}`);
+  };
+  showCurrent();
+
+  const { op } = await inquirer.prompt<{ op: 'pack' | 'publish' | 'both' | 'reset' | 'back' }>([
+    {
+      type: 'list',
+      name: 'op',
+      message: '设置项:',
+      choices: [
+        { name: '设置 pack（拉取源）', value: 'pack' },
+        { name: '设置 publish（发布目标）', value: 'publish' },
+        { name: '同时设置 pack 与 publish', value: 'both' },
+        { name: '重置为域默认', value: 'reset' },
+        new inquirer.Separator(),
+        { name: '↩ 返回', value: 'back' },
+      ],
+    },
+  ]);
+  if (op === 'back') return;
+  if (op === 'reset') {
+    if (clearRegistryOverride(domain)) logger.success(`已重置域 ${chalk.bold(domain)} 的 registry 为默认`);
+    else logger.warn(`域 ${domain} 未设置过 registry 覆盖`);
+    return;
+  }
+  const ov = getRegistryOverride(domain) ?? {};
+  if (op === 'pack' || op === 'both') {
+    const { pack } = await inquirer.prompt<{ pack: string }>([
+      { type: 'input', name: 'pack', message: 'pack registry:', default: ov.pack ?? base.pack, filter: (v: string) => v.trim() },
+    ]);
+    setRegistry(domain, { pack });
+  }
+  if (op === 'publish' || op === 'both') {
+    const { publish } = await inquirer.prompt<{ publish: string }>([
+      { type: 'input', name: 'publish', message: 'publish registry:', default: ov.publish ?? base.publish, filter: (v: string) => v.trim() },
+    ]);
+    setRegistry(domain, { publish });
+  }
+  logger.success(`已保存域 ${chalk.bold(domain)} 的 registry 设置。`);
+  showCurrent();
+}
+
+/** 从扫描目标取全部组件：虚拟空间等已预解析集合直接返回，否则扫描磁盘。 */
+async function componentsFromTarget(
+  target: ScanTarget,
+  opts: { requireYarnLock?: boolean } = {}
+): Promise<Component[]> {
+  if (target.components) {
+    const all = opts.requireYarnLock
+      ? target.components.filter((c) => c.yarnLockPath)
+      : target.components;
+    logger.step(`${target.label ?? '已选集合'}：${all.length} 个`);
+    return all;
+  }
+  logger.step(`扫描 ${chalk.cyan(target.dir)} ...`);
+  return discoverComponents(target.dir, {
+    requireYarnLock: opts.requireYarnLock,
+    maxDepth: target.maxDepth,
+  });
+}
+
+/** 依赖分层：分析组件间依赖 → 打印 layer-0→x，可导出 JSON / 存为虚拟空间 */
+async function flowDepsTree(config: SejuaniConfig): Promise<void> {
+  const target = await promptRoot(config, '选择要分析的组件库范围:');
+  if (!target) return;
+  const comps = await componentsFromTarget(target);
+  if (comps.length === 0) {
+    logger.warn('未发现可分析的组件。');
+    return;
+  }
+  const root = target.components ? target.label ?? target.dir : target.dir;
+  const result = analyzeLayers(comps, root);
+  printLayers(result);
+
+  const { save } = await inquirer.prompt<{ save: ('json' | 'vs')[] }>([
+    {
+      type: 'checkbox',
+      name: 'save',
+      message: '导出结果?（空格选，回车确认；不选则跳过）',
+      choices: [
+        { name: '导出分层 JSON 文件', value: 'json' },
+        { name: '保存为虚拟空间（可用 --vs 引用）', value: 'vs' },
+      ],
+    },
+  ]);
+
+  if (save.includes('json')) {
+    const { file } = await inquirer.prompt<{ file: string }>([
+      {
+        type: 'input',
+        name: 'file',
+        message: 'JSON 输出路径:',
+        default: path.join(process.cwd(), 'layers.json'),
+        filter: (v: string) => v.trim(),
+      },
+    ]);
+    fs.writeFileSync(path.resolve(file), JSON.stringify(toLayersJson(result), null, 2) + '\n');
+    logger.success(`已导出分层 JSON: ${path.resolve(file)}`);
+  }
+
+  if (save.includes('vs')) {
+    const { vsName } = await inquirer.prompt<{ vsName: string }>([
+      { type: 'input', name: 'vsName', message: '虚拟空间名称:', filter: (v: string) => v.trim() },
+    ]);
+    if (!vsName) {
+      logger.warn('未输入名称，已跳过保存。');
+      return;
+    }
+    const members: VsMember[] = [];
+    const layers: string[][] = result.layers.map((l) => l.map((c) => c.name));
+    for (const layer of result.layers) {
+      for (const c of layer) members.push({ name: path.basename(c.dir), pkgName: c.name, dir: c.dir });
+    }
+    for (const c of result.cycles) members.push({ name: path.basename(c.dir), pkgName: c.name, dir: c.dir });
+    saveVirtualSpace(vsName, { members, layers, source: `deps-tree:${root}` });
+    logger.success(`已保存为虚拟空间 ${chalk.bold(vsName)}（${members.length} 个组件，${layers.length} 层）`);
+    logger.info(chalk.dim(`使用: sjn <命令> --vs ${vsName}`));
+  }
+}
+
+/** 从已有虚拟空间中挑一个（无则提示）。 */
+async function pickVsName(message: string): Promise<string | null> {
+  const spaces = getVirtualSpaces();
+  const names = Object.keys(spaces).sort();
+  if (names.length === 0) {
+    logger.warn('暂无虚拟空间。可先用「依赖分层」保存，或在此新建。');
+    return null;
+  }
+  const { picked } = await inquirer.prompt<{ picked: string }>([
+    {
+      type: 'list',
+      name: 'picked',
+      message,
+      choices: names.map((n) => ({
+        name: `${n}  ${chalk.dim(
+          `${spaces[n].members.length} 个组件${spaces[n].layers ? ` · ${spaces[n].layers!.length} 层` : ''}`
+        )}`,
+        value: n,
+      })),
+    },
+  ]);
+  return picked;
+}
+
+/** 打印单个虚拟空间详情。 */
+function showVsDetail(name: string): void {
+  const vs = getVirtualSpace(name);
+  if (!vs) {
+    logger.error(`虚拟空间不存在: ${name}`);
+    return;
+  }
+  logger.title(`虚拟空间 ${name}`);
+  logger.info(chalk.dim(`来源: ${vs.source ?? '?'}   更新: ${vs.updatedAt}`));
+  if (vs.linkedDir) logger.info(chalk.dim(`软链目录: ${vs.linkedDir}`));
+  if (vs.layers && vs.layers.length > 0) {
+    vs.layers.forEach((layer, i) => {
+      logger.info(chalk.bold(`\nlayer-${i} ${chalk.dim(`(${layer.length})`)}`));
+      for (const p of layer) logger.info(`  ${chalk.cyan(p)}`);
+    });
+  } else {
+    for (const m of vs.members) logger.info(`  ${chalk.cyan(m.pkgName ?? m.name)}  ${chalk.dim(m.dir)}`);
+  }
+  logger.success(`\n共 ${vs.members.length} 个组件。`);
+}
+
+/** 新建虚拟空间：从组件库全量 / layers.json / 手动多选。 */
+async function flowVsCreate(config: SejuaniConfig): Promise<void> {
+  const { name } = await inquirer.prompt<{ name: string }>([
+    { type: 'input', name: 'name', message: '新虚拟空间名称:', filter: (v: string) => v.trim() },
+  ]);
+  if (!name) {
+    logger.warn('未输入名称，已取消。');
+    return;
+  }
+  const { src } = await inquirer.prompt<{ src: 'catalog' | 'layers' | 'pick' }>([
+    {
+      type: 'list',
+      name: 'src',
+      message: '成员来源:',
+      choices: [
+        { name: '从当前域组件库全量', value: 'catalog' },
+        { name: '从 deps-tree 导出的 layers.json', value: 'layers' },
+        { name: '手动多选（从某范围挑选）', value: 'pick' },
+      ],
+    },
+  ]);
+
+  let members: VsMember[] = [];
+  let layers: string[][] | undefined;
+  let source = 'manual';
+  if (src === 'catalog') {
+    const t = resolveScanTarget(config.roots.components);
+    logger.step(`扫描组件库 ${chalk.cyan(t.dir)} ...`);
+    const comps = await discoverComponents(t.dir, { maxDepth: t.maxDepth });
+    members = membersFromComponents(comps);
+    source = `catalog:${config.activeDomain}`;
+  } else if (src === 'layers') {
+    const { file } = await inquirer.prompt<{ file: string }>([
+      { type: 'input', name: 'file', message: 'layers.json 路径:', filter: (v: string) => v.trim() },
+    ]);
+    const abs = path.resolve(file);
+    if (!fs.existsSync(abs)) {
+      logger.error(`文件不存在: ${abs}`);
+      return;
+    }
+    const flat = flattenLayersJson(JSON.parse(fs.readFileSync(abs, 'utf8')));
+    members = flat.members.map((m) => ({ name: path.basename(m.dir), pkgName: m.name, dir: m.dir }));
+    layers = flat.layers;
+    source = `layers:${abs}`;
+  } else {
+    const comps = await pickComponents(config);
+    members = membersFromComponents(comps);
+    source = 'manual';
+  }
+  if (members.length === 0) {
+    logger.warn('没有可加入的成员，未创建。');
+    return;
+  }
+  const vs = saveVirtualSpace(name, { members, layers, source });
+  logger.success(
+    `已创建虚拟空间 ${chalk.bold(name)}（${vs.members.length} 个组件${layers ? `，${layers.length} 层` : ''}）`
+  );
+  logger.info(chalk.dim(`使用: sjn <命令> --vs ${name}`));
+}
+
+/** 把虚拟空间物化成软链目录。 */
+async function flowVsLink(): Promise<void> {
+  const name = await pickVsName('选择要物化(软链)的虚拟空间:');
+  if (!name) return;
+  const resolved = resolveVsComponents(name);
+  if (!resolved) {
+    logger.error(`虚拟空间不存在: ${name}`);
+    return;
+  }
+  if (resolved.missing.length > 0) {
+    logger.warn(`有 ${resolved.missing.length} 个成员目录已失效，已跳过: ${resolved.missing.join(', ')}`);
+  }
+  const { into, force, dryRun } = await inquirer.prompt<{ into: string; force: boolean; dryRun: boolean }>([
+    {
+      type: 'input',
+      name: 'into',
+      message: '软链目标目录:',
+      default: path.join(process.cwd(), name),
+      filter: (v: string) => v.trim(),
+    },
+    { type: 'confirm', name: 'force', message: '覆盖已存在的同名软链?', default: false },
+    { type: 'confirm', name: 'dryRun', message: '先干跑预览(不创建)?', default: true },
+  ]);
+  await createVirtualSpace(resolved.components, { into: path.resolve(into), force, dryRun, yes: false });
+  if (!dryRun) patchVirtualSpace(name, { linkedDir: path.resolve(into) });
+}
+
+/** 虚拟空间管理：列表 / 详情 / 新建 / 物化软链 / 删除。 */
+async function flowVs(config: SejuaniConfig): Promise<void> {
+  const { op } = await inquirer.prompt<{ op: 'list' | 'show' | 'create' | 'link' | 'rm' | 'back' }>([
+    {
+      type: 'list',
+      name: 'op',
+      message: '虚拟空间管理:',
+      choices: [
+        { name: '查看列表', value: 'list' },
+        { name: '查看详情', value: 'show' },
+        { name: '新建虚拟空间', value: 'create' },
+        { name: '物化为软链目录 (link)', value: 'link' },
+        { name: '删除', value: 'rm' },
+        new inquirer.Separator(),
+        { name: '↩ 返回', value: 'back' },
+      ],
+    },
+  ]);
+  if (op === 'back') return;
+  if (op === 'create') {
+    await flowVsCreate(config);
+    return;
+  }
+  if (op === 'link') {
+    await flowVsLink();
+    return;
+  }
+  if (op === 'list') {
+    const spaces = getVirtualSpaces();
+    const names = Object.keys(spaces).sort();
+    logger.title('虚拟空间 (vs)');
+    if (names.length === 0) {
+      logger.info(chalk.dim('  (暂无) 用「依赖分层」保存，或此处新建'));
+    } else {
+      for (const n of names) {
+        const vs = spaces[n];
+        const layerNote = vs.layers ? ` · ${vs.layers.length} 层` : '';
+        const linkNote = vs.linkedDir ? ` · 软链→${vs.linkedDir}` : '';
+        logger.info(`  ${chalk.bold(n)}  ${chalk.dim(`${vs.members.length} 个组件${layerNote}${linkNote}`)}`);
+      }
+    }
+    return;
+  }
+  if (op === 'show') {
+    const name = await pickVsName('选择要查看的虚拟空间:');
+    if (name) showVsDetail(name);
+    return;
+  }
+  if (op === 'rm') {
+    const name = await pickVsName('选择要删除的虚拟空间:');
+    if (!name) return;
+    const { ok } = await inquirer.prompt<{ ok: boolean }>([
+      { type: 'confirm', name: 'ok', message: `确认删除虚拟空间 ${name}?`, default: false },
+    ]);
+    if (!ok) return;
+    if (removeVirtualSpace(name)) logger.success(`已删除虚拟空间 ${chalk.bold(name)}`);
+    else logger.warn(`虚拟空间不存在: ${name}`);
+    return;
+  }
+}
+
 /** 交互式向导主流程 */
 export async function runWizard(configPath?: string): Promise<void> {
   let config = loadConfig(configPath);
@@ -425,7 +775,10 @@ export async function runWizard(configPath?: string): Promise<void> {
           { name: `工程依赖清单  ${chalk.dim('project-deps')}`, value: 'project-deps' },
           { name: `组件用量统计  ${chalk.dim('usage')}`, value: 'usage' },
           { name: `升级组件版本  ${chalk.dim('upgrade · 按 catalog')}`, value: 'upgrade' },
+          { name: `依赖分层  ${chalk.dim('deps-tree · layer-0→x / 导出 JSON')}`, value: 'deps-tree' },
           new inquirer.Separator('— 环境 —'),
+          { name: `虚拟空间管理  ${chalk.dim('vs · 创建/列表/物化软链')}`, value: 'vs' },
+          { name: `registry 设置  ${chalk.dim('registry · pack/publish 按域持久化')}`, value: 'registry' },
           { name: `域设置 / 切换  ${chalk.dim('domain · chery/foton/saas')}`, value: 'domain' },
           new inquirer.Separator(),
           { name: '退出', value: 'quit' },
@@ -451,6 +804,12 @@ export async function runWizard(configPath?: string): Promise<void> {
       else if (action === 'project-deps') await flowProjectDeps(config);
       else if (action === 'usage') await flowUsage(config);
       else if (action === 'upgrade') await flowUpgrade(config);
+      else if (action === 'deps-tree') await flowDepsTree(config);
+      else if (action === 'vs') await flowVs(config);
+      else if (action === 'registry') {
+        await flowRegistry(config);
+        config = loadConfig(configPath); // 重载以应用新的 registry 覆盖
+      }
     } catch (err) {
       logger.error((err as Error).message);
     }
