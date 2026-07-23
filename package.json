@@ -1,8 +1,12 @@
 {
-  "name": "sejuani",
+  "name": "@sealonely/sejuani",
   "version": "1.0.0",
   "description": "批量管理前端工程 / 组件（projects & components）的 package.json / yarn.lock、仓同步与依赖治理的终端工具",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seaLonely/Sejuani.git"
+  },
   "engines": {
     "node": ">=16"
   },
@@ -14,6 +18,9 @@
     "dist"
   ],
   "main": "dist/index.js",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json --watch",
