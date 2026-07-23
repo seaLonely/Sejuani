@@ -48,6 +48,8 @@ export interface SejuaniConfig {
   domains: Record<string, DomainConfig>;
   /** 当前域标识（可被 ~/.sejuani/state.json 覆盖） */
   activeDomain: string;
+  /** 完整发布(release)时，pack/publish 之前在组件目录依次执行的构建步骤 */
+  buildSteps: string[];
 }
 
 const WORKSPACE_ROOT = '/Users/cherish/Documents/workSpace/project';
@@ -106,12 +108,23 @@ export const DOMAINS: Record<DomainKey, DomainConfig> = {
 /** 默认域 */
 export const DEFAULT_DOMAIN: DomainKey = 'chery';
 
+/**
+ * 完整发布(release)默认构建步骤：在组件目录依次执行，完成后再 pack+publish。
+ * 可在 sejuani.config.json 用 "buildSteps" 数组覆盖。
+ */
+export const DEFAULT_BUILD_STEPS: string[] = [
+  'yarn install',
+  'yarn lib',
+  'gaia pub-isd prod',
+];
+
 /** 内置默认配置：默认展开为 chery 域 */
 export const DEFAULT_CONFIG: SejuaniConfig = {
   registries: DOMAINS[DEFAULT_DOMAIN].registries,
   roots: DOMAINS[DEFAULT_DOMAIN].roots,
   domains: DOMAINS,
   activeDomain: DEFAULT_DOMAIN,
+  buildSteps: DEFAULT_BUILD_STEPS,
 };
 
 export const CONFIG_FILENAME = 'sejuani.config.json';

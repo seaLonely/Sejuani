@@ -62,3 +62,29 @@ export async function discoverComponents(
 
   return components;
 }
+
+/**
+ * 把单个目录本身当作一个组件读取（用于「当前在组件目录下」的场景）。
+ * 直接读取 <dir>/package.json，不做递归扫描；无 package.json 时返回 null。
+ */
+export function readSingleComponent(dir: string): Component | null {
+  const abs = path.resolve(dir);
+  const packageJsonPath = path.join(abs, 'package.json');
+  if (!fs.existsSync(packageJsonPath)) return null;
+  const yarnLockPath = path.join(abs, 'yarn.lock');
+  const hasLock = fs.existsSync(yarnLockPath);
+  const comp: Component = {
+    name: path.basename(abs),
+    dir: abs,
+    packageJsonPath,
+    yarnLockPath: hasLock ? yarnLockPath : null,
+  };
+  try {
+    const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+    comp.pkgName = pkg.name;
+    comp.pkgVersion = pkg.version;
+  } catch {
+    // 解析失败也返回条目，后续操作会因缺少 name/version 跳过
+  }
+  return comp;
+}

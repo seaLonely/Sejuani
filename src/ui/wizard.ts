@@ -3,7 +3,7 @@ import path from 'path';
 import { Component } from '../types';
 import { chalk, logger } from '../utils/logger';
 import { discoverAndSelect, promptRoot, ScanTarget } from './select';
-import { discoverComponents } from '../core/discover';
+import { discoverComponents, readSingleComponent } from '../core/discover';
 import {
   buildNameChanges,
   buildReplaceUrlChanges,
@@ -33,6 +33,7 @@ type Action =
   | 'set-name'
   | 'link'
   | 'sync'
+  | 'release'
   | 'registries'
   | 'check-deps'
   | 'catalog'
@@ -184,6 +185,69 @@ async function flowSync(config: SejuaniConfig): Promise<void> {
     publishRegistry: publishRegistry.trim(),
     dryRun,
     yes: false,
+  });
+}
+
+async function flowRelease(config: SejuaniConfig): Promise<void> {
+  // 选择发包范围：当前目录（单个组件）或从组件库多选（批量）
+  const { scope } = await inquirer.prompt<{ scope: 'cwd' | 'pick' | 'back' }>([
+    {
+      type: 'list',
+      name: 'scope',
+      message: '发包范围:',
+      choices: [
+        { name: `当前目录（单个组件）  ${chalk.dim(process.cwd())}`, value: 'cwd' },
+        { name: '从组件库选择（可多选批量）', value: 'pick' },
+        new inquirer.Separator(),
+        { name: '↩ 返回', value: 'back' },
+      ],
+    },
+  ]);
+  if (scope === 'back') return;
+
+  let comps: Component[];
+  if (scope === 'cwd') {
+    const one = readSingleComponent(process.cwd());
+    if (!one) {
+      logger.error(`当前目录未找到 package.json: ${process.cwd()}`);
+      return;
+    }
+    comps = [one];
+  } else {
+    const t = resolveScanTarget(config.roots.components);
+    comps = await discoverAndSelect(t);
+    if (comps.length === 0) return;
+  }
+
+  // 发布模式：完整（build+pack+publish）或仅同步（pack+publish）
+  const { mode } = await inquirer.prompt<{ mode: 'full' | 'mirror' }>([
+    {
+      type: 'list',
+      name: 'mode',
+      message: '发布模式:',
+      choices: [
+        { name: `完整发包  ${chalk.dim((config.buildSteps ?? []).join(' → ') + ' → pack → publish')}`, value: 'full' },
+        { name: `仅同步  ${chalk.dim('pack → publish')}`, value: 'mirror' },
+      ],
+    },
+  ]);
+  const buildSteps = mode === 'full' ? config.buildSteps ?? [] : [];
+
+  const { packRegistry, publishRegistry, dryRun } = await inquirer.prompt<{
+    packRegistry: string;
+    publishRegistry: string;
+    dryRun: boolean;
+  }>([
+    { type: 'input', name: 'packRegistry', message: 'pack 源 registry:', default: config.registries.pack },
+    { type: 'input', name: 'publishRegistry', message: 'publish 目标 registry:', default: config.registries.publish },
+    { type: 'confirm', name: 'dryRun', message: '先干跑预览（不实际执行）?', default: true },
+  ]);
+  await syncComponents(comps, {
+    packRegistry: packRegistry.trim(),
+    publishRegistry: publishRegistry.trim(),
+    dryRun,
+    yes: false,
+    buildSteps,
   });
 }
 
@@ -352,6 +416,7 @@ export async function runWizard(configPath?: string): Promise<void> {
           { name: `修改包名  ${chalk.dim('set-name · package.json')}`, value: 'set-name' },
           { name: `创建虚拟空间  ${chalk.dim('link · 软链聚合')}`, value: 'link' },
           { name: `仓库发布同步  ${chalk.dim('sync · pack→publish')}`, value: 'sync' },
+          { name: `完整发包  ${chalk.dim('release · build→pack→publish')}`, value: 'release' },
           new inquirer.Separator('— 依赖治理 / 查询 —'),
           { name: `枚举仓库源  ${chalk.dim('registries · yarn.lock')}`, value: 'registries' },
           { name: `校验依赖可达性  ${chalk.dim('check-deps')}`, value: 'check-deps' },
@@ -378,6 +443,7 @@ export async function runWizard(configPath?: string): Promise<void> {
       else if (action === 'set-name') await flowSetName(config);
       else if (action === 'link') await flowLink(config);
       else if (action === 'sync') await flowSync(config);
+      else if (action === 'release') await flowRelease(config);
       else if (action === 'registries') await flowRegistries(config);
       else if (action === 'check-deps') await flowCheckDeps(config);
       else if (action === 'catalog') await flowCatalog(config);

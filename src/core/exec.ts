@@ -14,6 +14,8 @@ export interface RunCommandOptions {
   dryRun?: boolean;
   /** 传给子进程的环境变量 */
   env?: NodeJS.ProcessEnv;
+  /** 直接透传子进程 stdio（用于 yarn/gaia 等长时间构建命令，实时输出） */
+  inherit?: boolean;
 }
 
 /** 拼接可读命令行（仅用于打印） */
@@ -40,6 +42,7 @@ export function runCommand(
     env: opts.env ?? process.env,
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
+    stdio: opts.inherit ? 'inherit' : 'pipe',
   });
 
   return {

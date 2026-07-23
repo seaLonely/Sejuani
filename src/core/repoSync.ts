@@ -13,6 +13,11 @@ export interface SyncOptions {
   workDir?: string;
   dryRun: boolean;
   yes: boolean;
+  /**
+   * 完整发布：pack/publish 之前在每个组件自己的目录依次执行的构建步骤
+   * （如 yarn install / yarn lib / gaia pub-isd prod）。为空则仅镜像(pack+publish)。
+   */
+  buildSteps?: string[];
 }
 
 interface SyncItemResult {
@@ -48,11 +53,15 @@ export async function syncComponents(
 ): Promise<void> {
   const targets = components.filter((c) => c.pkgName && c.pkgVersion);
   if (targets.length === 0) {
-    logger.warn('所选组件均缺少 name/version，无法同步。');
+    logger.warn('所选组件均缺少 name/version，无法处理。');
     return;
   }
 
-  logger.title('仓同步计划（pack → publish → 清理 tgz）');
+  const buildSteps = opts.buildSteps?.filter((s) => s.trim()) ?? [];
+  const full = buildSteps.length > 0;
+
+  logger.title(full ? '完整发布计划（build → pack → publish → 清理 tgz）' : '仓同步计划（pack → publish → 清理 tgz）');
+  if (full) logger.info(chalk.dim(`构建步骤: ${buildSteps.join(' → ')}`));
   logger.info(chalk.dim(`pack   源: ${opts.packRegistry}`));
   logger.info(chalk.dim(`publish 目标: ${opts.publishRegistry}`));
   for (const c of targets) {
@@ -64,7 +73,10 @@ export async function syncComponents(
     logger.title('[dry-run] 将执行的命令');
     for (const c of targets) {
       const spec = `${c.pkgName}@${c.pkgVersion}`;
-      logger.info('  ' + chalk.cyan(spec));
+      logger.info('  ' + chalk.cyan(spec) + chalk.dim(`  (cwd: ${c.dir})`));
+      for (const step of buildSteps) {
+        logger.info('    $ ' + chalk.dim(step));
+      }
       logger.info(
         '    $ ' + chalk.dim(formatCommand('npm', ['pack', spec, `--registry=${opts.packRegistry}`, '--json']))
       );
@@ -82,7 +94,7 @@ export async function syncComponents(
       {
         type: 'confirm',
         name: 'confirmed',
-        message: `确认对 ${targets.length} 个组件执行 pack+publish?`,
+        message: `确认对 ${targets.length} 个组件执行 ${full ? '构建+pack+publish' : 'pack+publish'}?`,
         default: false,
       },
     ]);
@@ -103,6 +115,23 @@ export async function syncComponents(
   for (const c of targets) {
     const spec = `${c.pkgName}@${c.pkgVersion}`;
     logger.step(`[${++done}/${targets.length}] 处理 ${chalk.cyan(spec)}`);
+
+    // 完整发布：先在组件自己的目录依次执行构建步骤（实时输出）
+    let buildFailed: string | null = null;
+    for (const step of buildSteps) {
+      const [scmd, ...sargs] = step.split(/\s+/);
+      logger.info('  ' + chalk.dim('$ ') + chalk.cyan(step) + chalk.dim(`  (cwd: ${c.dir})`));
+      const r = runCommand(scmd, sargs, { cwd: c.dir, inherit: true });
+      if (!r.ok) {
+        buildFailed = step;
+        break;
+      }
+    }
+    if (buildFailed) {
+      results.push({ component: c.name, spec, ok: false, reason: `构建失败: ${buildFailed}` });
+      logger.error(`  构建步骤失败，已跳过后续 pack/publish: ${buildFailed}`);
+      continue;
+    }
 
     const packRes = runCommand(
       'npm',
@@ -155,7 +184,7 @@ export async function syncComponents(
 
   const okCount = results.filter((r) => r.ok).length;
   const failed = results.filter((r) => !r.ok);
-  logger.title('仓同步结果');
+  logger.title(full ? '完整发布结果' : '仓同步结果');
   logger.success(`成功: ${okCount}/${results.length}`);
   if (failed.length > 0) {
     logger.warn(`失败 ${failed.length} 个:`);

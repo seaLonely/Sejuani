@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import path from 'path';
 import { Command } from 'commander';
-import { discoverComponents } from './core/discover';
+import { discoverComponents, readSingleComponent } from './core/discover';
 import {
   buildNameChanges,
   buildReplaceUrlChanges,
@@ -16,6 +16,13 @@ import { chalk, logger } from './utils/logger';
 import { loadConfig, resolveScanTarget } from './core/configLoader';
 import { SejuaniConfig } from './config';
 import { setActiveDomain } from './core/domainState';
+import {
+  getAliases,
+  setAlias,
+  removeAlias,
+  expandAlias,
+  aliasStateFilePath,
+} from './core/aliasStore';
 import { ScanTarget } from './ui/select';
 import { syncComponents } from './core/repoSync';
 import { printRegistries } from './core/registries';
@@ -220,6 +227,58 @@ program
     });
   });
 
+// Feature A2 - 完整发包（构建 → pack → publish）
+program
+  .command('release [dir]')
+  .description('完整发包：在组件目录依次执行构建步骤（yarn install/lib/gaia …）后 pack → publish（默认当前目录）')
+  .option('-c, --config <file>', '指定 sejuani.config.json')
+  .option('--components [dir]', '批量：扫描组件库根目录下所有组件（省略 dir 时用配置根）')
+  .option('--no-build', '跳过构建步骤，仅 pack+publish（等价 sync）')
+  .option('--steps <list>', '覆盖构建步骤（分号分隔，如 "yarn install;yarn lib;gaia pub-isd prod"）')
+  .option('--pack-registry <url>', 'pack 源 registry（覆盖配置）')
+  .option('--publish-registry <url>', 'publish 目标 registry（覆盖配置）')
+  .option('--work-dir <dir>', '执行 pack/publish 的工作目录（默认临时目录）')
+  .option('--dry-run', '仅打印命令不执行', false)
+  .option('-y, --yes', '跳过确认', false)
+  .action(async (dir: string | undefined, opts) => {
+    const config = loadConfig(opts.config);
+
+    // 构建步骤：--no-build → 空；--steps → 覆盖；否则用配置默认
+    let buildSteps: string[];
+    if (opts.build === false) {
+      buildSteps = [];
+    } else if (opts.steps) {
+      buildSteps = String(opts.steps).split(';').map((s: string) => s.trim()).filter(Boolean);
+    } else {
+      buildSteps = config.buildSteps ?? [];
+    }
+
+    // 目标：--components 批量；否则把 dir/当前目录当作单个组件
+    let comps;
+    if (opts.components !== undefined) {
+      const root = typeof opts.components === 'string' ? opts.components : resolveScanTarget(config.roots.components).dir;
+      const maxDepth = typeof opts.components === 'string' ? undefined : resolveScanTarget(config.roots.components).maxDepth;
+      comps = await discoverComponents(root, { maxDepth });
+    } else {
+      const one = readSingleComponent(dir ?? process.cwd());
+      if (!one) {
+        logger.error(`当前目录未找到 package.json: ${path.resolve(dir ?? process.cwd())}`);
+        process.exitCode = 1;
+        return;
+      }
+      comps = [one];
+    }
+
+    await syncComponents(comps, {
+      packRegistry: opts.packRegistry ?? config.registries.pack,
+      publishRegistry: opts.publishRegistry ?? config.registries.publish,
+      workDir: opts.workDir,
+      dryRun: opts.dryRun,
+      yes: opts.yes,
+      buildSteps,
+    });
+  });
+
 // Feature B - 枚举 yarn.lock 仓库
 program
   .command('registries')
@@ -397,6 +456,47 @@ program
     logger.info(chalk.dim(`  组件库: ${d.roots.components.root}`));
   });
 
+// 自定义短链(alias)：把常用的长命令取个短名
+program
+  .command('alias [action] [name] [command]')
+  .description('自定义短链：alias set <名> "<命令>" / alias rm <名> / alias（查看列表）')
+  .allowUnknownOption(true)
+  .action((action: string | undefined, name: string | undefined, command: string | undefined) => {
+    if (!action || action === 'list' || action === 'ls') {
+      printAliases();
+      return;
+    }
+    if (action === 'set' || action === 'add') {
+      if (!name || !command) {
+        logger.error('用法: sjn alias set <名称> "<完整命令>"，例: sjn alias set r "release --no-build"');
+        process.exitCode = 1;
+        return;
+      }
+      const reserved = new Set(program.commands.map((c) => c.name()));
+      if (reserved.has(name)) {
+        logger.error(`"${name}" 是内置命令，不能用作短链名。`);
+        process.exitCode = 1;
+        return;
+      }
+      setAlias(name, command.trim());
+      logger.success(`已设置短链 ${chalk.bold(name)} = ${chalk.cyan(command.trim())}`);
+      logger.info(chalk.dim(`现在可用: sjn ${name} [额外参数]`));
+      return;
+    }
+    if (action === 'rm' || action === 'remove' || action === 'del') {
+      if (!name) {
+        logger.error('用法: sjn alias rm <名称>');
+        process.exitCode = 1;
+        return;
+      }
+      if (removeAlias(name)) logger.success(`已删除短链 ${chalk.bold(name)}`);
+      else logger.warn(`短链不存在: ${name}`);
+      return;
+    }
+    logger.error(`未知操作: ${action}。可用: list / set / rm`);
+    process.exitCode = 1;
+  });
+
 // Feature F - 顶层帮助：前置 banner + 后置分组总览/全局选项/示例
 program.addHelpText(
   'beforeAll',
@@ -462,6 +562,12 @@ ${chalk.bold('域(domain):')}
   chery(奇瑞) / foton(福田) / saas 各对应不同的工程仓库与组件仓库。
   ${chalk.dim('sjn domain            # 查看当前域与列表')}
   ${chalk.dim('sjn domain foton      # 切换到福田域（持久化到 ~/.sejuani/state.json）')}
+
+${chalk.bold('短链(alias):')}
+  把常用长命令取个短名，运行时自动展开，额外参数会追加在后面。
+  ${chalk.dim('sjn alias set r "release --no-build"   # 定义 sjn r = sjn release --no-build')}
+  ${chalk.dim('sjn r --dry-run                        # 等价 sjn release --no-build --dry-run')}
+  ${chalk.dim('sjn alias           # 查看全部短链    sjn alias rm r   # 删除')}
 `
 );
 
@@ -475,6 +581,20 @@ function printDomains(config: SejuaniConfig): void {
     logger.info(chalk.dim(`         组件 ${d.roots.components.root}`));
   }
   logger.info(chalk.dim('\n切换: sjn domain <name>   例: sjn domain foton'));
+}
+
+function printAliases(): void {
+  const aliases = getAliases();
+  const names = Object.keys(aliases).sort();
+  logger.title('自定义短链');
+  if (names.length === 0) {
+    logger.info(chalk.dim('  (暂无) 用 sjn alias set <名> "<命令>" 添加，例: sjn alias set r "release --no-build"'));
+  } else {
+    for (const n of names) {
+      logger.info(`  ${chalk.bold(n)}  ${chalk.dim('→')}  sjn ${chalk.cyan(aliases[n])}`);
+    }
+  }
+  logger.info(chalk.dim(`\n存储: ${aliasStateFilePath()}`));
 }
 
 function printGuide(): void {
@@ -530,7 +650,12 @@ ${chalk.dim('提示：升级后需在各工程重新执行 yarn install 以同�
   logger.info(g);
 }
 
-program.parseAsync(process.argv).catch((err) => {
-  logger.error(err instanceof Error ? err.message : String(err));
-  process.exit(1);
-});
+// 先展开自定义短链（若首个参数命中且非内置命令），再交给 commander 解析
+const reservedCommands = new Set(program.commands.map((c) => c.name()));
+const expandedArgs = expandAlias(process.argv.slice(2), reservedCommands);
+program
+  .parseAsync([process.argv[0], process.argv[1], ...expandedArgs])
+  .catch((err) => {
+    logger.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  });
