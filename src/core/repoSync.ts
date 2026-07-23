@@ -44,6 +44,34 @@ function parsePackFilename(stdout: string): string | null {
 }
 
 /**
+ * 解析 pack 真实落盘的 tgz 路径。
+ * 注意：scoped 包（@scope/name）在磁盘上会被拍平成 scope-name-version.tgz，
+ * 但部分 npm 版本的 `npm pack --json` 仍把 filename 返回成带斜杠的
+ * "@scope/name-version.tgz"，直接 path.join 会指向一个不存在的 @scope 子目录，
+ * 导致后续 npm publish 报 "tarball seems to be corrupted / ENOENT"。
+ * 这里对多种候选名做存在性探测，并最终兜底扫描 workDir 下的 .tgz。
+ */
+function resolveTgzPath(workDir: string, filename: string): string | null {
+  const candidates = [
+    filename, // 原样（非 scoped 或已拍平的 npm 版本）
+    filename.replace(/^@/, '').replace(/\//g, '-'), // @scope/name -> scope-name
+    path.basename(filename), // 仅取文件名部分
+  ];
+  for (const c of candidates) {
+    const p = path.join(workDir, c);
+    if (fs.existsSync(p)) return p;
+  }
+  // 兜底：workDir 内唯一的 .tgz（每次 publish 后都会清理，pack 后应只剩这一个）
+  try {
+    const tgzs = fs.readdirSync(workDir).filter((f) => f.endsWith('.tgz'));
+    if (tgzs.length === 1) return path.join(workDir, tgzs[0]);
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+/**
  * 仓同步：对每个组件执行 npm pack <name@version> → npm publish <tgz> → 删除 tgz。
  * 逐组件容错，最后汇总。
  */
@@ -149,7 +177,12 @@ export async function syncComponents(
       logger.error('  未能解析出 tgz 文件名');
       continue;
     }
-    const tgzPath = path.join(workDir, filename);
+    const tgzPath = resolveTgzPath(workDir, filename);
+    if (!tgzPath) {
+      results.push({ component: c.name, spec, ok: false, reason: `pack 产出的 tgz 未找到: ${filename}` });
+      logger.error(`  pack 产出的 tgz 未找到（磁盘无匹配文件）: ${filename}`);
+      continue;
+    }
 
     const pubRes = runCommand(
       'npm',
