@@ -27,33 +27,23 @@ interface SyncItemResult {
   reason?: string;
 }
 
-/** 从 npm pack --json 输出中解析出 tgz 文件名 */
-function parsePackFilename(stdout: string): string | null {
-  try {
-    const arr = JSON.parse(stdout);
-    if (Array.isArray(arr) && arr[0] && typeof arr[0].filename === 'string') {
-      return arr[0].filename;
-    }
-  } catch {
-    // 回退：取最后一行非空输出
-    const lines = stdout.split('\n').map((l) => l.trim()).filter(Boolean);
-    const last = lines[lines.length - 1];
-    if (last && last.endsWith('.tgz')) return last;
-  }
-  return null;
+/**
+ * 推算 npm pack 落盘的 tgz 文件名（与 npm 一致）：
+ * scoped 包 @scope/name 会被拍平为 scope-name，拼上 -version.tgz。
+ * 例：@f6p/income-separate-setting@1.0.2-chery -> f6p-income-separate-setting-1.0.2-chery.tgz
+ */
+function expectedTgzName(pkgName: string, pkgVersion: string): string {
+  return `${pkgName.replace(/^@/, '').replace(/\//g, '-')}-${pkgVersion}.tgz`;
 }
 
 /**
  * 解析 pack 真实落盘的 tgz 路径。
- * 注意：scoped 包（@scope/name）在磁盘上会被拍平成 scope-name-version.tgz，
- * 但部分 npm 版本的 `npm pack --json` 仍把 filename 返回成带斜杠的
- * "@scope/name-version.tgz"，直接 path.join 会指向一个不存在的 @scope 子目录，
- * 导致后续 npm publish 报 "tarball seems to be corrupted / ENOENT"。
+ * 注意：scoped 包（@scope/name）在磁盘上会被拍平成 scope-name-version.tgz；
  * 这里对多种候选名做存在性探测，并最终兜底扫描 workDir 下的 .tgz。
  */
 function resolveTgzPath(workDir: string, filename: string): string | null {
   const candidates = [
-    filename, // 原样（非 scoped 或已拍平的 npm 版本）
+    filename, // 原样
     filename.replace(/^@/, '').replace(/\//g, '-'), // @scope/name -> scope-name
     path.basename(filename), // 仅取文件名部分
   ];
@@ -106,7 +96,7 @@ export async function syncComponents(
         logger.info('    $ ' + chalk.dim(step));
       }
       logger.info(
-        '    $ ' + chalk.dim(formatCommand('npm', ['pack', spec, `--registry=${opts.packRegistry}`, '--json']))
+        '    $ ' + chalk.dim(formatCommand('npm', ['pack', spec, `--registry=${opts.packRegistry}`]))
       );
       logger.info(
         '    $ ' + chalk.dim(formatCommand('npm', ['publish', '<tgz>', `--registry=${opts.publishRegistry}`]))
@@ -161,33 +151,35 @@ export async function syncComponents(
       continue;
     }
 
+    // pack：直接透传 stdio（实时输出 + 允许私有仓交互认证，避免卡在不可见的提示上）
+    logger.info(
+      '  ' + chalk.dim('$ ') + chalk.cyan(`npm pack ${spec} --registry=${opts.packRegistry}`) + chalk.dim(`  (cwd: ${workDir})`)
+    );
     const packRes = runCommand(
       'npm',
-      ['pack', spec, `--registry=${opts.packRegistry}`, '--json'],
-      { cwd: workDir }
+      ['pack', spec, `--registry=${opts.packRegistry}`],
+      { cwd: workDir, inherit: true }
     );
     if (!packRes.ok) {
-      results.push({ component: c.name, spec, ok: false, reason: `pack 失败: ${packRes.stderr.trim() || packRes.code}` });
-      logger.error(`  pack 失败: ${packRes.stderr.trim()}`);
+      results.push({ component: c.name, spec, ok: false, reason: `pack 失败: exit ${packRes.code}` });
+      logger.error(`  pack 失败（exit ${packRes.code}），请检查上方 npm 输出`);
       continue;
     }
-    const filename = parsePackFilename(packRes.stdout);
-    if (!filename) {
-      results.push({ component: c.name, spec, ok: false, reason: 'pack 未产出 tgz 文件名' });
-      logger.error('  未能解析出 tgz 文件名');
-      continue;
-    }
-    const tgzPath = resolveTgzPath(workDir, filename);
+    const tgzPath = resolveTgzPath(workDir, expectedTgzName(c.pkgName!, c.pkgVersion!));
     if (!tgzPath) {
-      results.push({ component: c.name, spec, ok: false, reason: `pack 产出的 tgz 未找到: ${filename}` });
-      logger.error(`  pack 产出的 tgz 未找到（磁盘无匹配文件）: ${filename}`);
+      results.push({ component: c.name, spec, ok: false, reason: 'pack 产出的 tgz 未找到' });
+      logger.error('  pack 产出的 tgz 未找到（磁盘无匹配文件）');
       continue;
     }
 
+    // publish：同样透传 stdio，便于看到进度/错误并响应可能的认证提示
+    logger.info(
+      '  ' + chalk.dim('$ ') + chalk.cyan(`npm publish ${path.basename(tgzPath)} --registry=${opts.publishRegistry}`)
+    );
     const pubRes = runCommand(
       'npm',
       ['publish', tgzPath, `--registry=${opts.publishRegistry}`],
-      { cwd: workDir }
+      { cwd: workDir, inherit: true }
     );
 
     // 清理 tgz（无论 publish 成功与否）
@@ -198,8 +190,8 @@ export async function syncComponents(
     }
 
     if (!pubRes.ok) {
-      results.push({ component: c.name, spec, ok: false, reason: `publish 失败: ${pubRes.stderr.trim() || pubRes.code}` });
-      logger.error(`  publish 失败: ${pubRes.stderr.trim()}`);
+      results.push({ component: c.name, spec, ok: false, reason: `publish 失败: exit ${pubRes.code}` });
+      logger.error(`  publish 失败（exit ${pubRes.code}），请检查上方 npm 输出`);
       continue;
     }
     results.push({ component: c.name, spec, ok: true });
