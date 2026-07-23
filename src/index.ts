@@ -274,6 +274,8 @@ program
   .option('--pack-registry <url>', 'pack 源 registry（覆盖配置）')
   .option('--publish-registry <url>', 'publish 目标 registry（覆盖配置）')
   .option('--work-dir <dir>', '执行 pack/publish 的工作目录（默认临时目录）')
+  .option('--pack-retries <n>', 'pack 找不到版本(ETARGET)时的重试次数（应对发布后同步延迟）', (v) => parseInt(v, 10))
+  .option('--pack-wait <sec>', '每次 pack 重试的等待秒数（默认 5）', (v) => parseInt(v, 10))
   .option('--dry-run', '仅打印命令不执行', false)
   .option('-y, --yes', '跳过确认', false)
   .action(async (opts) => {
@@ -291,6 +293,8 @@ program
       workDir: opts.workDir,
       dryRun: opts.dryRun,
       yes: opts.yes,
+      packRetries: opts.packRetries,
+      packRetryDelayMs: opts.packWait != null ? opts.packWait * 1000 : undefined,
     });
   });
 
@@ -305,6 +309,8 @@ program
   .option('--pack-registry <url>', 'pack 源 registry（覆盖配置）')
   .option('--publish-registry <url>', 'publish 目标 registry（覆盖配置）')
   .option('--work-dir <dir>', '执行 pack/publish 的工作目录（默认临时目录）')
+  .option('--pack-retries <n>', 'pack 找不到版本(ETARGET)时的重试次数（应对发布后同步延迟）', (v) => parseInt(v, 10))
+  .option('--pack-wait <sec>', '每次 pack 重试的等待秒数（默认 5）', (v) => parseInt(v, 10))
   .option('--dry-run', '仅打印命令不执行', false)
   .option('-y, --yes', '跳过确认', false)
   .action(async (dir: string | undefined, opts) => {
@@ -343,6 +349,8 @@ program
       dryRun: opts.dryRun,
       yes: opts.yes,
       buildSteps,
+      packRetries: opts.packRetries,
+      packRetryDelayMs: opts.packWait != null ? opts.packWait * 1000 : undefined,
     });
   });
 

@@ -18,6 +18,10 @@ export interface SyncOptions {
    * （如 yarn install / yarn lib / gaia pub-isd prod）。为空则仅镜像(pack+publish)。
    */
   buildSteps?: string[];
+  /** pack 报 ETARGET/找不到版本时的最大重试次数（应对 gaia 发布后同步到 pack 源的延迟），默认 12 */
+  packRetries?: number;
+  /** 每次 pack 重试的间隔(ms)，默认 5000 */
+  packRetryDelayMs?: number;
 }
 
 interface SyncItemResult {
@@ -39,6 +43,16 @@ function expectedTgzName(pkgName: string, pkgVersion: string): string {
 /** 转义字符串中的正则元字符，用于构造精确匹配的成功行正则 */
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** 简单的延时 */
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** 判断 npm pack 输出是否为“版本尚未就绪”（发布后源未同步），而非真实错误 */
+function isVersionNotReady(output: string): boolean {
+  return /ETARGET|No matching version found|notarget/i.test(output);
 }
 
 /**
@@ -156,18 +170,29 @@ export async function syncComponents(
       continue;
     }
 
-    // pack：直接透传 stdio（实时输出 + 允许私有仓交互认证，避免卡在不可见的提示上）
+    // pack：npm 从 pack 源拉取刚发布的版本。gaia 发布后同步到 pack 源可能有延迟，
+    // 若报 ETARGET/找不到版本，则等待后重试若干次（默认约 60s），避免“发得太快查不到”直接失败。
     logger.info(
       '  ' + chalk.dim('$ ') + chalk.cyan(`npm pack ${spec} --registry=${opts.packRegistry}`) + chalk.dim(`  (cwd: ${workDir})`)
     );
-    const packRes = runCommand(
-      'npm',
-      ['pack', spec, `--registry=${opts.packRegistry}`],
-      { cwd: workDir, inherit: true }
-    );
+    const maxRetries = opts.packRetries ?? 12;
+    const retryDelayMs = opts.packRetryDelayMs ?? 5000;
+    let packRes = await runCommandStream('npm', ['pack', spec, `--registry=${opts.packRegistry}`], { cwd: workDir });
+    let retried = 0;
+    while (!packRes.ok && retried < maxRetries && isVersionNotReady(packRes.stdout + packRes.stderr)) {
+      retried++;
+      logger.warn(
+        `  pack 暂未取到 ${spec}（发布后 pack 源同步可能有延迟），${Math.round(retryDelayMs / 1000)}s 后重试 ${retried}/${maxRetries}…`
+      );
+      await sleep(retryDelayMs);
+      packRes = await runCommandStream('npm', ['pack', spec, `--registry=${opts.packRegistry}`], { cwd: workDir });
+    }
     if (!packRes.ok) {
-      results.push({ component: c.name, spec, ok: false, reason: `pack 失败: exit ${packRes.code}` });
-      logger.error(`  pack 失败（exit ${packRes.code}），请检查上方 npm 输出`);
+      const reason = isVersionNotReady(packRes.stdout + packRes.stderr)
+        ? `pack 失败: 重试 ${maxRetries} 次后 pack 源仍未可取到该版本（可能同步较慢，稍后重试或用 --pack-wait/--pack-retries 加长等待）`
+        : `pack 失败: exit ${packRes.code}`;
+      results.push({ component: c.name, spec, ok: false, reason });
+      logger.error(`  ${reason}`);
       continue;
     }
     const tgzPath = resolveTgzPath(workDir, expectedTgzName(c.pkgName!, c.pkgVersion!));
