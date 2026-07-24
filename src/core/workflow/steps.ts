@@ -9,6 +9,8 @@ import { syncComponents } from '../repoSync';
 import { installProjects, PackageManager } from '../projectInstall';
 import { findProjectsUsing } from '../usage';
 import * as git from '../git';
+import * as yunxiao from '../yunxiao/api';
+import { getCoderAdapter, buildFixPrompt } from '../coder/registry';
 import { StepContext, StepKind, WorkflowStep } from './types';
 
 /**
@@ -330,6 +332,181 @@ const gitMerge: StepHandler = {
   },
 };
 
+/** 取云效修复流数据；缺失时抛错（这些步骤只应出现在 fix-bug 工作流里）。 */
+function requireYunxiao(ctx: StepContext): NonNullable<StepContext['yunxiao']> {
+  if (!ctx.yunxiao) {
+    throw new Error('该步骤仅用于云效修复流，缺少 ctx.yunxiao 上下文。');
+  }
+  return ctx.yunxiao;
+}
+
+/** 把评论模板里的占位符替换为运行时值（{mrUrl}/{branch}/{identifier}）。 */
+function renderCommentContent(raw: string, ctx: StepContext): string {
+  const y = ctx.yunxiao;
+  return raw
+    .replace(/\{mrUrl\}/g, y?.mrUrl ?? '(待生成)')
+    .replace(/\{branch\}/g, y?.workBranch ?? '(待创建)')
+    .replace(/\{identifier\}/g, y?.issue.identifier ?? '');
+}
+
+const coderFix: StepHandler = {
+  kind: 'coder.fix',
+  describe: () => ({
+    kind: 'coder.fix',
+    summary: '调用本地 AI 编码工具（claude/kimi/opencode）在目标工程内修复选定缺陷。',
+    params: {
+      files: '可选，建议重点关注的文件路径数组',
+    },
+    dangerous: false,
+  }),
+  preview: (step, ctx) => {
+    const y = requireYunxiao(ctx);
+    const adapter = getCoderAdapter(y.coder);
+    const files = Array.isArray(step.params.files) ? step.params.files.map(String) : undefined;
+    return [`修复工单 ${y.issue.identifier}：${y.issue.subject}`, ...adapter.preview({ repoDir: y.repoDir, prompt: '', files })];
+  },
+  execute: async (step, ctx) => {
+    const y = requireYunxiao(ctx);
+    if (!git.isGitRepo(y.repoDir)) return { ok: false, reason: `目标目录不是 git 仓库：${y.repoDir}` };
+    const files = Array.isArray(step.params.files) ? step.params.files.map(String) : undefined;
+    const prompt = buildFixPrompt({
+      identifier: y.issue.identifier,
+      subject: y.issue.subject,
+      description: y.issue.description,
+      files,
+    });
+    const adapter = getCoderAdapter(y.coder);
+    const res = await adapter.run({ repoDir: y.repoDir, prompt, files });
+    if (!res.ok) return { ok: false, reason: res.reason ?? '编码工具执行失败' };
+    if (!git.hasChanges(y.repoDir)) {
+      logger.warn('  编码工具执行完成，但工作区没有产生任何改动。');
+      return { ok: true, reason: '无改动产生（后续 git.mr 将跳过）' };
+    }
+    return { ok: true, reason: '已产生改动' };
+  },
+};
+
+const gitMr: StepHandler = {
+  kind: 'git.mr',
+  describe: () => ({
+    kind: 'git.mr',
+    summary: '把 AI 修复的改动建分支→提交→push，并在云效创建合并请求(MR)。不可逆（推送远端）。',
+    params: {
+      targetBranch: '可选，MR 目标分支；缺省用上下文 targetBranch',
+      branchPrefix: "可选，工作分支前缀，默认 'fix'",
+    },
+    dangerous: true,
+  }),
+  preview: (step, ctx) => {
+    const y = requireYunxiao(ctx);
+    const target = step.params.targetBranch ? String(step.params.targetBranch) : y.targetBranch;
+    return [
+      chalk.yellow('⚠ 不可逆：推送分支并在云效创建 MR'),
+      `工程：${y.repoDir}`,
+      `目标分支：${target}`,
+    ];
+  },
+  execute: async (step, ctx) => {
+    const y = requireYunxiao(ctx);
+    if (!git.isGitRepo(y.repoDir)) return { ok: false, reason: `目标目录不是 git 仓库：${y.repoDir}` };
+    if (!git.hasChanges(y.repoDir)) return { ok: false, reason: 'AI 未产生改动，无可提交内容，已跳过 MR' };
+
+    const prefix = step.params.branchPrefix ? String(step.params.branchPrefix) : 'fix';
+    const ts = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
+    const branch = y.workBranch ?? `${prefix}/${y.issue.identifier}-${ts}`.replace(/[^a-zA-Z0-9._/-]/g, '-');
+    const target = step.params.targetBranch ? String(step.params.targetBranch) : y.targetBranch;
+
+    const cb = git.createBranch(y.repoDir, branch);
+    if (!cb.ok) return { ok: false, reason: `创建分支失败: ${cb.message}` };
+    y.workBranch = branch;
+    const ad = git.add(y.repoDir);
+    if (!ad.ok) return { ok: false, reason: `git add 失败: ${ad.message}` };
+    const cm = git.commit(y.repoDir, `fix: ${y.issue.subject}（${y.issue.identifier}）`);
+    if (!cm.ok) return { ok: false, reason: `git commit 失败: ${cm.message}` };
+    const ps = await git.push(y.repoDir, 'origin', branch, true);
+    if (!ps.ok) return { ok: false, reason: `git push 失败: ${ps.message}` };
+
+    const repoId = y.repoId ?? git.getRemoteRepoIdentity(y.repoDir) ?? undefined;
+    if (!repoId) {
+      return { ok: false, reason: '无法从 origin 解析云效代码库标识，请用 --repo-id 显式指定后 flow resume。' };
+    }
+    const mr = await yunxiao.createMergeRequest(repoId, {
+      sourceBranch: branch,
+      targetBranch: target,
+      title: `fix: ${y.issue.subject}（${y.issue.identifier}）`,
+      description: `由 Sejuani 自动化修复工单 ${y.issue.identifier} 生成。`,
+    });
+    y.mrUrl = mr.webUrl;
+    if (mr.webUrl) logger.success(`  已创建 MR：${chalk.cyan(mr.webUrl)}`);
+    return { ok: true, reason: mr.webUrl ? `MR: ${mr.webUrl}` : '已创建 MR' };
+  },
+};
+
+const yunxiaoComment: StepHandler = {
+  kind: 'yunxiao.comment',
+  describe: () => ({
+    kind: 'yunxiao.comment',
+    summary: '向当前工单追加一条评论，记录自动化操作痕迹（支持 {mrUrl}/{branch}/{identifier} 占位符）。',
+    params: {
+      content: '必填，评论正文；可含占位符 {mrUrl}/{branch}/{identifier}',
+    },
+    dangerous: false,
+  }),
+  preview: (step, ctx) => {
+    const y = requireYunxiao(ctx);
+    const content = renderCommentContent(String(step.params.content ?? ''), ctx);
+    return [`在工单 ${y.issue.identifier} 追加评论：`, `  ${content}`];
+  },
+  execute: async (step, ctx) => {
+    const y = requireYunxiao(ctx);
+    const content = renderCommentContent(String(step.params.content ?? ''), ctx).trim();
+    if (!content) return { ok: false, reason: '评论内容为空' };
+    await yunxiao.addComment(y.issue.id, content);
+    return { ok: true, reason: '已追加评论' };
+  },
+};
+
+const yunxiaoTransition: StepHandler = {
+  kind: 'yunxiao.transition',
+  describe: () => ({
+    kind: 'yunxiao.transition',
+    summary: '按云效工作流规则把当前工单流转到目标状态（执行前校验流转合法性）。不可逆（改变远端状态）。',
+    params: {
+      toStatusName: '必填，目标状态名（如 开发中/待测试/已完成）',
+    },
+    dangerous: true,
+  }),
+  preview: (step, ctx) => {
+    const y = requireYunxiao(ctx);
+    return [
+      chalk.yellow(`⚠ 状态流转：${y.issue.statusName || '(当前)'} → ${step.params.toStatusName ?? '<目标状态>'}`),
+      `工单：${y.issue.identifier} ${y.issue.subject}`,
+    ];
+  },
+  execute: async (step, ctx) => {
+    const y = requireYunxiao(ctx);
+    const toName = String(step.params.toStatusName ?? '').trim();
+    if (!toName) return { ok: false, reason: '缺少目标状态名 toStatusName' };
+    const statuses = y.statuses ?? (await yunxiao.listWorkflowStatuses(y.issue.spaceId, y.issue.type));
+    y.statuses = statuses;
+    const targetId = yunxiao.findStatusIdByName(statuses, toName);
+    if (!targetId) {
+      return { ok: false, reason: `目标状态「${toName}」不在该工单的工作流状态中：${statuses.map((s) => s.name).join('/') || '(空)'}` };
+    }
+    if (targetId === y.issue.statusId) {
+      return { ok: true, reason: `已处于「${toName}」，无需流转` };
+    }
+    const chk = await yunxiao.canTransition(y.issue.spaceId, y.issue.type, y.issue.statusId, targetId);
+    if (!chk.ok) {
+      return { ok: false, reason: `不符合工作流流转规则：${y.issue.statusName} ✗→ ${toName}` };
+    }
+    await yunxiao.updateWorkItemStatus(y.issue.id, targetId);
+    y.issue.statusId = targetId;
+    y.issue.statusName = toName;
+    return { ok: true, reason: `已流转到「${toName}」` };
+  },
+};
+
 /** 全部步骤处理器（kind -> handler） */
 export const STEP_HANDLERS: Record<StepKind, StepHandler> = {
   'component.bump': componentBump,
@@ -339,6 +516,10 @@ export const STEP_HANDLERS: Record<StepKind, StepHandler> = {
   'project.install': projectInstall,
   'git.pull': gitPull,
   'git.merge': gitMerge,
+  'coder.fix': coderFix,
+  'git.mr': gitMr,
+  'yunxiao.comment': yunxiaoComment,
+  'yunxiao.transition': yunxiaoTransition,
 };
 
 /** 是否已知的步骤 kind */

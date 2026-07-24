@@ -132,7 +132,7 @@ export function toLayersJson(result: LayerResult): Record<string, unknown> {
 
 /** 打印分层结果（人类可读） */
 export function printLayers(result: LayerResult): void {
-  logger.title('组件依赖分层 (layer-0 → 越上层依赖越多)');
+  logger.section('组件依赖分层 (layer-0 → 越上层依赖越多)');
   if (result.totalComponents === 0) {
     logger.warn('组件库中未发现任何带 name 的组件。');
     return;
@@ -141,13 +141,13 @@ export function printLayers(result: LayerResult): void {
     logger.info(chalk.bold(`\nlayer-${i}  ${chalk.dim(`(${comps.length})`)}`));
     for (const c of comps) {
       const depNote = c.deps.length > 0 ? chalk.dim(` → ${c.deps.join(', ')}`) : chalk.dim(' (无内部依赖)');
-      logger.info(`  ${chalk.cyan(c.name)}${depNote}`);
+      logger.item(`${chalk.cyan(c.name)}${depNote}`);
     }
   });
   if (result.cycles.length > 0) {
-    logger.title('⚠ 依赖环 / 被环阻塞（未分层）');
+    logger.section('⚠ 依赖环 / 被环阻塞（未分层）');
     for (const c of result.cycles) {
-      logger.info(`  ${chalk.yellow(c.name)}${chalk.dim(c.deps.length ? ` → ${c.deps.join(', ')}` : '')}`);
+      logger.item(`${chalk.yellow(c.name)}${chalk.dim(c.deps.length ? ` → ${c.deps.join(', ')}` : '')}`);
     }
   }
   logger.success(

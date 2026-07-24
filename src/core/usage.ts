@@ -28,7 +28,7 @@ export function printProjectsUsing(
   projects: Component[],
   catalog?: Catalog
 ): void {
-  logger.title(`哪些工程使用了 ${componentName}`);
+  logger.section(`哪些工程使用了 ${componentName}`);
   if (catalog && !catalog.has(componentName)) {
     logger.warn(`注意：${componentName} 不在组件库 catalog 中，可能非本组织组件。`);
   }
@@ -37,11 +37,10 @@ export function printProjectsUsing(
     logger.warn('没有工程使用该组件。');
     return;
   }
-  for (const h of hits) {
-    logger.info(
-      `  ${chalk.cyan(h.project)}  ${chalk.dim(`${h.range} (${h.section})`)}`
-    );
-  }
+  logger.table(
+    ['工程', '声明区间'],
+    hits.map((h) => [chalk.cyan(h.project), chalk.dim(`${h.range} (${h.section})`)])
+  );
   logger.success(`共 ${hits.length} 个工程使用。`);
 }
 
@@ -88,7 +87,7 @@ export function printComponentsOfProject(
   projects: Component[],
   catalog: Catalog
 ): void {
-  logger.title(`工程 ${projectName} 使用的组件`);
+  logger.section(`工程 ${projectName} 使用的组件`);
   const { project, uses } = listComponentsOfProject(projectName, projects, catalog);
   if (!project) {
     logger.error(`未找到工程: ${projectName}`);
@@ -98,14 +97,14 @@ export function printComponentsOfProject(
     logger.warn('该工程未使用组件库中的任何组件。');
     return;
   }
-  for (const u of uses) {
-    const flag = u.outdated
-      ? chalk.yellow(`↑ 可升级到 ${u.catalogVersion}`)
-      : chalk.green('已最新');
-    logger.info(
-      `  ${chalk.cyan(u.name)}  ${chalk.dim(`${u.range} (${u.section})`)}  ${flag}`
-    );
-  }
+  logger.table(
+    ['组件', '声明区间', '状态'],
+    uses.map((u) => [
+      chalk.cyan(u.name),
+      chalk.dim(`${u.range} (${u.section})`),
+      u.outdated ? chalk.yellow(`↑ 可升级到 ${u.catalogVersion}`) : chalk.green('已最新'),
+    ])
+  );
   logger.success(`共 ${uses.length} 个组件。`);
 }
 
@@ -156,19 +155,21 @@ export function printUsageSummary(
     logger.info(JSON.stringify({ used, unused }, null, 2));
     return;
   }
-  logger.title('全工程组件用量统计');
+  logger.section('全工程组件用量统计');
   if (used.length === 0) {
     logger.warn('未发现任何工程使用组件库中的组件。');
   }
-  for (const u of used) {
-    logger.info(
-      `  ${chalk.cyan(u.name)}  ${chalk.dim(`被 ${u.count} 个工程使用 | catalog ${u.catalogVersion} | 区间 ${u.ranges.join(', ')}`)}`
-    );
-  }
+  logger.table(
+    ['组件', '用量'],
+    used.map((u) => [
+      chalk.cyan(u.name),
+      chalk.dim(`被 ${u.count} 个工程使用 | catalog ${u.catalogVersion} | 区间 ${u.ranges.join(', ')}`),
+    ])
+  );
   if (unused.length > 0) {
-    logger.title('未被任何工程使用的组件');
+    logger.section('未被任何工程使用的组件');
     for (const name of unused) {
-      logger.info('  ' + chalk.dim(name));
+      logger.item(chalk.dim(name));
     }
   }
   logger.success(`使用中 ${used.length} 个 / 未使用 ${unused.length} 个。`);

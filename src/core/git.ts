@@ -60,9 +60,65 @@ export async function merge(cwd: string, from: string): Promise<{ ok: boolean; c
   return { ok: r.ok && !conflict, conflict, message: out };
 }
 
-/** git push（可指定 remote/branch） */
-export async function push(cwd: string, remote = 'origin', branch?: string): Promise<{ ok: boolean; message: string }> {
-  const args = branch ? ['push', remote, branch] : ['push'];
+/** git push（可指定 remote/branch；setUpstream 时带 -u 建立跟踪，便于首推新分支） */
+export async function push(
+  cwd: string,
+  remote = 'origin',
+  branch?: string,
+  setUpstream = false
+): Promise<{ ok: boolean; message: string }> {
+  const args = ['push'];
+  if (setUpstream && branch) args.push('-u');
+  if (branch) args.push(remote, branch);
   const r = await runCommandStream('git', args, { cwd });
   return { ok: r.ok, message: (r.stdout + r.stderr).trim() };
+}
+
+/**
+ * 创建并切换到新分支（git checkout -b <name> [from]）。
+ * from 缺省则基于当前 HEAD。
+ */
+export function createBranch(cwd: string, name: string, from?: string): { ok: boolean; message: string } {
+  const args = from ? ['checkout', '-b', name, from] : ['checkout', '-b', name];
+  const r = runCommand('git', args, { cwd });
+  return { ok: r.ok, message: (r.stderr || r.stdout).trim() };
+}
+
+/** git add：paths 缺省为全部改动（'-A'）。 */
+export function add(cwd: string, paths: string[] = ['-A']): { ok: boolean; message: string } {
+  const r = runCommand('git', ['add', ...paths], { cwd });
+  return { ok: r.ok, message: (r.stderr || r.stdout).trim() };
+}
+
+/** git commit -m <message>。 */
+export function commit(cwd: string, message: string): { ok: boolean; message: string } {
+  const r = runCommand('git', ['commit', '-m', message], { cwd });
+  return { ok: r.ok, message: (r.stderr || r.stdout).trim() };
+}
+
+/** 是否存在改动（已跟踪的修改或未跟踪文件），与 isClean 互补语义更直白。 */
+export function hasChanges(cwd: string): boolean {
+  return !isClean(cwd);
+}
+
+/** 取 remote 的 URL（默认 origin）；失败返回 null。 */
+export function remoteUrl(cwd: string, remote = 'origin'): string | null {
+  const r = runCommand('git', ['remote', 'get-url', remote], { cwd });
+  if (!r.ok) return null;
+  const url = r.stdout.trim();
+  return url || null;
+}
+
+/**
+ * 从 origin URL 解析云效代码库标识 `组织/仓库` 形式（去掉 .git 后缀）。
+ * 兼容 https 与 git@ 两种远程地址；解析失败返回 null（调用方应提示手动指定 repoId）。
+ */
+export function getRemoteRepoIdentity(cwd: string, remote = 'origin'): string | null {
+  const url = remoteUrl(cwd, remote);
+  if (!url) return null;
+  // git@host:group/sub/repo.git  或  https://host/group/sub/repo.git
+  const m = url.match(/^(?:git@[^:]+:|https?:\/\/[^/]+\/)(.+?)(?:\.git)?$/);
+  if (!m) return null;
+  const path = m[1].replace(/\/+$/, '');
+  return path || null;
 }

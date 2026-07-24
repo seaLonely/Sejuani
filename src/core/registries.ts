@@ -51,19 +51,22 @@ export function collectRegistries(components: Component[]): RegistryStat[] {
 /** 打印结果 */
 export function printRegistries(components: Component[], byComponent: boolean): void {
   const stats = collectRegistries(components);
-  logger.title('yarn.lock 中的仓库枚举');
+  logger.section('yarn.lock 中的仓库枚举');
   if (stats.length === 0) {
     logger.warn('未在所选组件中发现 resolved URL。');
     return;
   }
-  for (const s of stats) {
-    logger.info(
-      `  ${chalk.cyan(s.base)}  ${chalk.dim(`命中 ${s.hits} 处 / ${s.components.size} 个组件`)}`
+  if (!byComponent) {
+    logger.table(
+      ['仓库', '命中'],
+      stats.map((s) => [chalk.cyan(s.base), chalk.dim(`命中 ${s.hits} 处 / ${s.components.size} 个组件`)])
     );
-    if (byComponent) {
-      for (const name of [...s.components].sort()) {
-        logger.info('      ' + chalk.dim(name));
-      }
+    return;
+  }
+  for (const s of stats) {
+    logger.item(`${chalk.cyan(s.base)}  ${chalk.dim(`命中 ${s.hits} 处 / ${s.components.size} 个组件`)}`);
+    for (const name of [...s.components].sort()) {
+      logger.item(chalk.dim(name), { indent: 6 });
     }
   }
 }

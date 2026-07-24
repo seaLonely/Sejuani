@@ -66,13 +66,14 @@ export function printCatalog(catalog: Catalog, asJson: boolean): void {
     );
     return;
   }
-  logger.title('组件库清单');
+  logger.section('组件库清单');
   if (items.length === 0) {
     logger.warn('组件库中未发现任何组件。');
     return;
   }
-  for (const i of items) {
-    logger.info(`  ${chalk.cyan(i.name)}  ${chalk.green(i.version || '?')}  ${chalk.dim(i.dir)}`);
-  }
+  logger.table(
+    ['名称', '版本', '目录'],
+    items.map((i) => [chalk.cyan(i.name), chalk.green(i.version || '?'), chalk.dim(i.dir)])
+  );
   logger.success(`共 ${items.length} 个组件。`);
 }

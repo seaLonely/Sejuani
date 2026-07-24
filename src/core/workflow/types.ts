@@ -1,9 +1,11 @@
 import { Component } from '../../types';
 import { SejuaniConfig } from '../../config';
 import { Catalog } from '../catalog';
+import { CoderTool } from '../coderConfig';
+import { WorkflowStatus, WorkItem } from '../yunxiao/types';
 
 /**
- * 工作流类型定义。工作流由 AI 规划器（planner）产出、执行引擎（engine）消费。
+ * 工作流类型定义。工作流由 AI 规划器（planner）产出、或由云效修复流（fixBug）直接构造，由执行引擎（engine）消费。
  * 步骤 kind 与 params 的契约见 steps.ts（步骤目录）。
  */
 
@@ -15,7 +17,11 @@ export type StepKind =
   | 'project.upgrade'
   | 'project.install'
   | 'git.pull'
-  | 'git.merge';
+  | 'git.merge'
+  | 'git.mr'
+  | 'coder.fix'
+  | 'yunxiao.comment'
+  | 'yunxiao.transition';
 
 /** 单个工作流步骤 */
 export interface WorkflowStep {
@@ -84,4 +90,29 @@ export interface StepContext {
   dryRun: boolean;
   /** 是否跳过危险步骤的二次确认 */
   yes: boolean;
+  /** 云效修复流（fix-bug）专用的运行时数据；非该流程为 undefined */
+  yunxiao?: YunxiaoStepData;
+}
+
+/**
+ * 云效修复流跨步骤共享的数据：coder.fix / git.mr / yunxiao.comment / yunxiao.transition
+ * 都从这里读取当前工单、目标工程与产出（如 MR 链接）。
+ */
+export interface YunxiaoStepData {
+  /** 选定的缺陷工单 */
+  issue: WorkItem;
+  /** 目标工程目录 */
+  repoDir: string;
+  /** 使用的本地编码工具 */
+  coder: CoderTool;
+  /** MR 目标分支（如 master/main） */
+  targetBranch: string;
+  /** 显式指定的云效代码库标识（缺省从 origin 解析） */
+  repoId?: string;
+  /** git.mr 创建并推送的工作分支 */
+  workBranch?: string;
+  /** git.mr 产出的 MR 链接，供后续 yunxiao.comment 引用 */
+  mrUrl?: string;
+  /** 缓存的工作流状态列表（首次查询后复用） */
+  statuses?: WorkflowStatus[];
 }
