@@ -419,8 +419,13 @@ async function runAction(action: Action, config: SejuaniConfig, configPath?: str
   return config;
 }
 
-/** 交互式向导主流程：两级分类菜单（分类 → 操作），不循环滚动。 */
-export async function runWizard(configPath?: string): Promise<void> {
+/**
+ * 交互式向导主流程：两级分类菜单（分类 → 操作），不循环滚动。
+ *
+ * @param entry 起始入口：某个分类 key（如 'batch'/'ai'）则直接进入该分类，减少首屏选择；
+ *              'all' 则先展示全部分类。无论从哪里进入，「返回上级」后均回到分类选择。
+ */
+export async function runWizard(configPath?: string, entry: string = 'batch'): Promise<void> {
   let config = loadConfig(configPath);
   logger.title('Sejuani · 前端工程/组件批量与依赖治理工具');
   logger.info(
@@ -430,26 +435,36 @@ export async function runWizard(configPath?: string): Promise<void> {
   const QUIT = '__quit__';
   const BACK = '__back__';
 
+  // 起始直进分类：entry 命中某分类则跳过首屏选择；'all' 或返回后置空，下一轮展示分类选择。
+  let pending: string | null = entry === 'all' ? null : entry;
+
   // 顶层：选择功能分类
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const { cat } = await inquirer.prompt<{ cat: string }>([
-      {
-        type: 'list',
-        name: 'cat',
-        message: '选择功能分类:',
-        loop: false,
-        pageSize: MENU.length + 3,
-        choices: [
-          ...MENU.map((c) => ({ name: `${c.label}  ${chalk.dim('· ' + c.hint)}`, value: c.key })),
-          new inquirer.Separator(),
-          { name: '退出', value: QUIT },
-        ],
-      },
-    ]);
+    let cat: string;
+    if (pending) {
+      cat = pending;
+      pending = null;
+    } else {
+      const ans = await inquirer.prompt<{ cat: string }>([
+        {
+          type: 'list',
+          name: 'cat',
+          message: '选择功能分类:',
+          loop: false,
+          pageSize: MENU.length + 3,
+          choices: [
+            ...MENU.map((c) => ({ name: `${c.label}  ${chalk.dim('· ' + c.hint)}`, value: c.key })),
+            new inquirer.Separator(),
+            { name: '退出', value: QUIT },
+          ],
+        },
+      ]);
+      cat = ans.cat;
+    }
     if (cat === QUIT) break;
     const category = MENU.find((c) => c.key === cat);
-    if (!category) continue;
+    if (!category) continue; // 无效 entry → 下一轮回到分类选择
 
     // 次级：在该分类内选择操作，直到「返回上级」
     let back = false;

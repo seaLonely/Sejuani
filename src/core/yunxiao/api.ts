@@ -90,22 +90,35 @@ export async function getCurrentUser(): Promise<CurrentUser> {
 }
 
 /**
- * 查询工作项列表。云效以 POST :search 接收过滤条件；类型/负责人用服务端过滤，
- * 关键词/状态名做本地过滤（避免各版本字段差异导致漏筛）。
+ * 查询工作项列表。云效 POST :search 强制要求带 spaceId（项目 id）与
+ * category（工作项类型，英文枚举 Req/Bug/Task，多值逗号分隔）；未指定
+ * 类型时一次性查全部类型。关键词/状态名/负责人做本地过滤。
  */
 export async function listWorkItems(query: ListQuery = {}): Promise<WorkItem[]> {
   const org = organizationId();
   const spaceId = query.spaceId ?? getYunxiaoConfig().defaultProjectId;
+  if (!spaceId) {
+    throw new Error(
+      '未配置云效项目 id：请先执行 `sjn yunxiao-config set-project <项目 id>`，或用 `--space <项目 id>` 指定'
+    );
+  }
   const limit = query.limit ?? 50;
-  const conditions: Record<string, unknown> = { perPage: limit, page: 1 };
-  if (spaceId) conditions.spaceId = spaceId;
-  if (query.type) conditions.category = TYPE_LABELS[query.type];
-  if (query.assignedToId) conditions.assignedTo = query.assignedToId;
+  // category 用英文枚举（Req/Bug/Task），多值逗号分隔；未指定类型时查全部。
+  const category: string = query.type ?? 'Req,Bug,Task';
+  const conditions: Record<string, unknown> = {
+    spaceId,
+    spaceType: 'Project',
+    category,
+    page: 1,
+    perPage: limit,
+    orderBy: 'gmtCreate',
+    sort: 'desc',
+  };
 
   const res = await request<any>('POST', PATHS.searchWorkItems(org), { body: conditions });
   let items = extractList(res).map(toWorkItem);
 
-  // 本地兜底过滤
+  // 本地兜底过滤（assignedTo 需通过 conditions JSON 下发，此处统一在本地筛）
   if (query.type) items = items.filter((w) => w.type === query.type);
   if (query.assignedToId) items = items.filter((w) => !w.assignedToId || w.assignedToId === query.assignedToId);
   if (query.statusName) items = items.filter((w) => w.statusName.includes(query.statusName!));

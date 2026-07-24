@@ -29,7 +29,7 @@ ${chalk.dim('扫描工程(projects)与组件库(components)，批量编辑 packa
     'after',
     `
 ${chalk.bold('命令分类:')}
-  ${chalk.bold('交互式')}    start(默认)                     启动向导，菜单化驱动全部能力
+  ${chalk.bold('交互式')}    start(默认) [-a|-w]              启动向导；默认直进批量编辑，-a 看全部分类，-w 直进云效
   ${chalk.bold('批量编辑')}  replace-url / set-version /       写操作，均走预览→确认→.bak备份→写入
               set-name / upgrade / link / sync
   ${chalk.bold('依赖治理')}  registries / check-deps /         只读，枚举仓库 / 校验依赖 / 依赖分层
@@ -53,7 +53,9 @@ ${chalk.bold('写操作安全选项（replace-url / set-version / set-name / upg
 
 ${chalk.bold('典型示例:')}
   ${chalk.dim('# 交互式向导（推荐）')}
-  $ sjn
+  $ sjn                                    # 默认直进「批量编辑」
+  $ sjn -a                                 # 展示全部功能分类
+  $ sjn -w                                 # 直进「AI / 云效协作」
 
   ${chalk.dim('# 组件库清单 / 用量统计 / 反查')}
   $ sjn catalog
