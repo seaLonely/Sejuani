@@ -55,6 +55,18 @@ import {
   vsStateFilePath,
   VsMember,
 } from './core/vsStore';
+import {
+  getAiConfig,
+  setAiConfig,
+  maskApiKey,
+  aiStateFilePath,
+} from './core/aiConfig';
+import { runAiFlow } from './ui/aiFlow';
+import { listSpecs, loadSpec, workflowsDir } from './core/workflow/store';
+import { renderWorkflow, runWorkflow } from './core/workflow/engine';
+import { listTemplates, loadTemplate, removeTemplate, templatesDir } from './core/workflow/templates';
+import { runLogFile, tailRunLog, logsDir } from './utils/fileLogger';
+import { StepContext, WorkflowSpec } from './core/workflow/types';
 
 /**
  * 依据 CLI 选项与配置解析出一个扫描目标。
@@ -667,6 +679,63 @@ program
     process.exitCode = 1;
   });
 
+// AI 工作流：选组件 + 自然语言描述 → 生成可审阅工作流 → 确认后确定性执行
+program
+  .command('ai [description...]')
+  .description('AI 工作流：选组件并用自然语言描述，生成可审阅工作流并（确认后）执行')
+  .option('-c, --config <file>', '指定 sejuani.config.json')
+  .option('-d, --dir <dir>', '选组件的扫描目录（覆盖配置）')
+  .option('--components <dir>', '组件库根目录（覆盖配置）')
+  .option('--template <name>', '套用已存模板（不调 AI，按当前选中组件重绑定）')
+  .option('--save-template <name>', '把本次生成的工作流存为模板')
+  .option('--dry-run', '仅规划并预览工作流，不执行', false)
+  .option('-y, --yes', '跳过确认（含危险步骤，慎用）', false)
+  .action(async (description: string[] | undefined, opts) => {
+    // ai config 子命令走单独命令；这里仅处理工作流
+    const config = loadConfig(opts.config);
+    await runAiFlow(config, {
+      dir: opts.dir,
+      components: opts.components,
+      description: description && description.length ? description.join(' ') : undefined,
+      template: opts.template,
+      saveTemplate: opts.saveTemplate,
+      dryRun: opts.dryRun,
+      yes: opts.yes,
+    });
+  });
+
+// AI 配置：show / set-key / set-base / set-model
+program
+  .command('ai-config [action] [value]')
+  .alias('aicfg')
+  .description('AI 接入配置：ai-config show | set-key <k> | set-base <url> | set-model <m>')
+  .action((action: string | undefined, value: string | undefined) => {
+    handleAiConfig(action, value);
+  });
+
+// 工作流管理：list / show <id> / run <id> / resume <id> / template / log <id>
+program
+  .command('flow [action] [id] [arg]')
+  .description('管理已保存的 AI 工作流：flow list | show <id> | run <id> | resume <id> | template [list|show <n>|rm <n>] | log <id>')
+  .option('-c, --config <file>', '指定 sejuani.config.json')
+  .option('--dry-run', 'run/show：仅预览不执行', false)
+  .option('-y, --yes', 'run/resume：跳过确认', false)
+  .action(async (action: string | undefined, id: string | undefined, arg: string | undefined, opts) => {
+    const config = loadConfig(opts.config);
+    await handleFlow(action, id, arg, opts, config);
+  });
+
+// 日志目录：打印 NDJSON 日志存放位置
+program
+  .command('logs')
+  .description('打印 sejuani 日志目录（每日 NDJSON + 每次运行日志）')
+  .action(() => {
+    logger.title('sejuani 日志');
+    logger.info(`  每日日志目录: ${chalk.cyan(logsDir())}`);
+    logger.info(`  每次运行日志: ${chalk.cyan(workflowsDir())}/<id>.run.log`);
+    logger.info(chalk.dim('\n查看某次运行原文: sjn flow log <id>'));
+  });
+
 // Feature F - 顶层帮助：前置 banner + 后置分组总览/全局选项/示例
 program.addHelpText(
   'beforeAll',
@@ -1007,6 +1076,225 @@ async function handleVs(
   process.exitCode = 1;
 }
 
+/**
+ * AI 接入配置：show / set-key / set-base / set-model。
+ * apiKey 展示时打码。
+ */
+function handleAiConfig(action: string | undefined, value: string | undefined): void {
+  const act = (action ?? 'show').toLowerCase();
+  if (act === 'show') {
+    const cfg = getAiConfig();
+    logger.title('AI 接入配置');
+    logger.info(`  baseURL     : ${chalk.cyan(cfg.baseURL)}`);
+    logger.info(`  model       : ${chalk.cyan(cfg.model)}`);
+    logger.info(`  temperature : ${chalk.cyan(String(cfg.temperature))}`);
+    logger.info(`  apiKey      : ${cfg.apiKey ? chalk.green(maskApiKey(cfg.apiKey)) : chalk.red('(未设置)')}`);
+    logger.info(chalk.dim(`\n配置文件: ${aiStateFilePath()}`));
+    if (!cfg.apiKey) {
+      logger.warn('尚未设置 apiKey：sjn ai-config set-key <key>（或设置环境变量 OPENAI_API_KEY）。');
+    }
+    return;
+  }
+  if (!value) {
+    logger.error(`操作 ${act} 需要一个值。例如: sjn ai-config ${act} <值>`);
+    process.exitCode = 1;
+    return;
+  }
+  switch (act) {
+    case 'set-key':
+      setAiConfig({ apiKey: value });
+      logger.success(`已设置 apiKey: ${maskApiKey(value)}`);
+      return;
+    case 'set-base':
+      setAiConfig({ baseURL: value });
+      logger.success(`已设置 baseURL: ${value}`);
+      return;
+    case 'set-model':
+      setAiConfig({ model: value });
+      logger.success(`已设置 model: ${value}`);
+      return;
+    default:
+      logger.error(`未知操作: ${action}。可用: show / set-key <k> / set-base <url> / set-model <m>`);
+      process.exitCode = 1;
+  }
+}
+
+/**
+ * 重建执行上下文：扫描组件库与工程根，从 spec 各步 params.components 反推选中组件。
+ * 供 flow show / run / resume 复用（脱离原始交互会话）。
+ */
+async function buildFlowContext(
+  config: SejuaniConfig,
+  spec: WorkflowSpec,
+  dryRun: boolean,
+  yes: boolean
+): Promise<StepContext> {
+  const compT = resolveScanTarget(config.roots.components);
+  const projT = resolveScanTarget(config.roots.projects);
+  const components = await discoverComponents(compT.dir, { maxDepth: compT.maxDepth });
+  const projects = await discoverComponents(projT.dir, { maxDepth: projT.maxDepth });
+  // 从各步 params.components 的并集反推选中组件；缺省用全部组件兜底
+  const names = new Set<string>();
+  for (const step of spec.steps) {
+    const cs = step.params && (step.params as any).components;
+    if (Array.isArray(cs)) for (const n of cs) names.add(String(n));
+  }
+  const selectedComponents =
+    names.size > 0
+      ? components.filter((c) => (c.pkgName && names.has(c.pkgName)) || names.has(c.name))
+      : components;
+  return {
+    config,
+    components,
+    catalog: catalogFromComponents(components),
+    projects,
+    selectedComponents: selectedComponents.length > 0 ? selectedComponents : components,
+    foundProjects: [],
+    dryRun,
+    yes,
+  };
+}
+
+/**
+ * 工作流模板管理：list / show <name> / rm <name>。
+ * （sub 取自 flow 命令的第二个位置参，name 取自第三个）
+ */
+function handleFlowTemplate(sub: string | undefined, name: string | undefined): void {
+  const s = (sub ?? 'list').toLowerCase();
+  if (s === 'list' || s === 'ls') {
+    const tpls = listTemplates();
+    logger.title(`工作流模板（${tpls.length}）`);
+    if (tpls.length === 0) {
+      logger.info(chalk.dim(`  暂无。用 sjn ai ... --save-template <名> 创建。目录: ${templatesDir()}`));
+      return;
+    }
+    for (const t of tpls) {
+      logger.info(`  ${chalk.bold(t.name)}  ${t.title}  ${chalk.dim(`${t.steps.length}步 ${t.savedAt}`)}`);
+    }
+    logger.info(chalk.dim(`\n目录: ${templatesDir()}`));
+    return;
+  }
+  if (s === 'show') {
+    if (!name) {
+      logger.error('用法: sjn flow template show <名>');
+      process.exitCode = 1;
+      return;
+    }
+    const tpl = loadTemplate(name);
+    if (!tpl) {
+      logger.error(`模板不存在: ${name}`);
+      process.exitCode = 1;
+      return;
+    }
+    logger.title(`模板 ${tpl.name}：${tpl.title}`);
+    logger.info(chalk.dim(`保存于: ${tpl.savedAt}，共 ${tpl.steps.length} 步`));
+    tpl.steps.forEach((step, i) => {
+      const danger = step.dangerous ? chalk.yellow(' [不可逆]') : '';
+      const deps = step.dependsOn && step.dependsOn.length ? chalk.dim(`  ← ${step.dependsOn.join(', ')}`) : '';
+      logger.info(`  ${chalk.bold(`${i + 1}. ${step.title}`)} ${chalk.dim(`(${step.kind})`)}${danger}${deps}`);
+    });
+    return;
+  }
+  if (s === 'rm' || s === 'remove' || s === 'del') {
+    if (!name) {
+      logger.error('用法: sjn flow template rm <名>');
+      process.exitCode = 1;
+      return;
+    }
+    if (removeTemplate(name)) logger.success(`已删除模板 ${chalk.bold(name)}`);
+    else logger.warn(`模板不存在: ${name}`);
+    return;
+  }
+  logger.error(`未知操作: ${sub}。可用: list / show <名> / rm <名>`);
+  process.exitCode = 1;
+}
+
+/**
+ * 管理已保存工作流：list / show <id> / run <id> / resume <id> / template / log <id>。
+ */
+async function handleFlow(
+  action: string | undefined,
+  id: string | undefined,
+  arg: string | undefined,
+  opts: { dryRun?: boolean; yes?: boolean },
+  config: SejuaniConfig
+): Promise<void> {
+  const act = (action ?? 'list').toLowerCase();
+  if (act === 'list') {
+    const specs = listSpecs();
+    logger.title(`已保存工作流（${specs.length}）`);
+    if (specs.length === 0) {
+      logger.info(chalk.dim(`  暂无。目录: ${workflowsDir()}`));
+      return;
+    }
+    for (const s of specs) {
+      logger.info(
+        `  ${chalk.bold(s.id)}  ${s.title}  ${chalk.dim(`[${s.domain}] ${s.steps.length}步 ${s.createdAt}`)}`
+      );
+    }
+    logger.info(chalk.dim(`\n目录: ${workflowsDir()}`));
+    return;
+  }
+
+  // 模板管理：flow template [list|show <name>|rm <name>]
+  if (act === 'template' || act === 'templates' || act === 'tpl') {
+    handleFlowTemplate(id, arg);
+    return;
+  }
+
+  // 运行日志：flow log <id>
+  if (act === 'log' || act === 'logs') {
+    if (!id) {
+      logger.error('用法: sjn flow log <id>（用 sjn flow list 查看 id）');
+      process.exitCode = 1;
+      return;
+    }
+    const file = runLogFile(id);
+    logger.title(`工作流运行日志 ${id}`);
+    logger.info(chalk.dim(`文件: ${file}`));
+    const lines = tailRunLog(id, 60);
+    if (lines.length === 0) {
+      logger.warn('无日志（该工作流尚未执行过，或日志已清理）。');
+      return;
+    }
+    for (const line of lines) logger.info('  ' + chalk.dim(line));
+    return;
+  }
+
+  if (!id) {
+    logger.error(`操作 ${act} 需要工作流 id。例如: sjn flow ${act} <id>（用 sjn flow list 查看）`);
+    process.exitCode = 1;
+    return;
+  }
+  const spec = loadSpec(id);
+  if (!spec) {
+    logger.error(`未找到工作流: ${id}。用 sjn flow list 查看已保存的工作流。`);
+    process.exitCode = 1;
+    return;
+  }
+
+  switch (act) {
+    case 'show': {
+      const ctx = await buildFlowContext(config, spec, true, !!opts.yes);
+      renderWorkflow(spec, ctx);
+      return;
+    }
+    case 'run': {
+      const ctx = await buildFlowContext(config, spec, !!opts.dryRun, !!opts.yes);
+      await runWorkflow(spec, ctx, { dryRun: !!opts.dryRun, yes: !!opts.yes, resume: false });
+      return;
+    }
+    case 'resume': {
+      const ctx = await buildFlowContext(config, spec, false, !!opts.yes);
+      await runWorkflow(spec, ctx, { dryRun: false, yes: !!opts.yes, resume: true });
+      return;
+    }
+    default:
+      logger.error(`未知操作: ${action}。可用: list / show <id> / run <id> / resume <id>`);
+      process.exitCode = 1;
+  }
+}
+
 function printGuide(): void {
   const g = `
 ${chalk.bold.cyan('Sejuani (sjn) · 使用手册')}
@@ -1066,6 +1354,19 @@ ${chalk.bold('■ 常见组合')}
   3) 升级所有工程组件到最新精确版本:    sjn upgrade --dry-run --diff  →  sjn upgrade -y
   4) 换源前先排查仓库与可用性:          sjn registries && sjn check-deps --only-missing
   5) 组件发布到 nexus:                  sjn sync --dry-run  →  sjn sync -y
+
+${chalk.bold('■ AI 工作流(ai/flow) — 自然语言驱动的可审阅编排')}
+  选组件 + 用一句话描述意图 → AI 生成结构化工作流 → 终端审阅 → 确认后按依赖顺序确定性执行。
+  规划前会先用确定性影响域引擎算出「受影响工程 + 上游波及组件 + 建议发布层序」并展示（范围不由 AI 臆造）。
+  覆盖：组件升级/发包/同步、使用方工程升级/装依赖/分支拉取合并；不可逆步骤(发布/合并/push)在确认时高亮。
+  ai-config show|set-key <k>|set-base <url>|set-model <m>   配置 AI 接入（兼容 OpenAI，可环境变量 OPENAI_API_KEY）
+  ai [描述...]        选组件→描述→生成并审阅工作流（--dry-run 仅预览，-y 跳过确认）
+  ai ... --save-template <名>   把本次生成的工作流存为模板
+  ai --template <名>            纯套用模板（不调 AI），按当前选中组件重绑定
+  flow list|show <id>|run <id>|resume <id>                 管理/续跑已保存的工作流
+  flow template [list|show <名>|rm <名>]                    管理工作流模板
+  flow log <id>                                            查看某次运行的 NDJSON 日志（含 AI 请求/响应原文）
+  logs                                                     打印日志目录位置
 
 ${chalk.dim('提示：升级后需在各工程重新执行 yarn install 以同步 yarn.lock。')}
 `;

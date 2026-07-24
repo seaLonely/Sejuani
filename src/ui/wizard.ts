@@ -39,6 +39,8 @@ import {
   patchVirtualSpace,
   VsMember,
 } from '../core/vsStore';
+import { runAiFlow } from './aiFlow';
+import { listTemplates } from '../core/workflow/templates';
 
 type Action =
   | 'replace-url'
@@ -56,6 +58,7 @@ type Action =
   | 'upgrade'
   | 'deps-tree'
   | 'vs'
+  | 'ai'
   | 'domain'
   | 'registry'
   | 'quit';
@@ -422,6 +425,42 @@ async function flowDomain(config: SejuaniConfig): Promise<string> {
   return picked;
 }
 
+/**
+ * AI 工作流入口（向导）：可选「新建(AI 规划)」或「从模板套用」。
+ * 两者均复用 runAiFlow（后者传入 template 选项，不调 AI，按当前选中组件重绑定）。
+ */
+async function flowAi(config: SejuaniConfig): Promise<void> {
+  const templates = listTemplates();
+  const { mode } = await inquirer.prompt<{ mode: 'new' | 'template' }>([
+    {
+      type: 'list',
+      name: 'mode',
+      message: 'AI 工作流:',
+      choices: [
+        { name: '新建（选组件 + 自然语言描述，由 AI 规划）', value: 'new' },
+        {
+          name: `从模板套用${templates.length ? `（${templates.length} 个可用）` : '（暂无模板）'}`,
+          value: 'template',
+          disabled: templates.length === 0,
+        },
+      ],
+    },
+  ]);
+  if (mode === 'template') {
+    const { name } = await inquirer.prompt<{ name: string }>([
+      {
+        type: 'list',
+        name: 'name',
+        message: '选择模板:',
+        choices: templates.map((t) => ({ name: `${t.name}  ${chalk.dim(`${t.title} · ${t.steps.length}步`)}`, value: t.name })),
+      },
+    ]);
+    await runAiFlow(config, { template: name });
+    return;
+  }
+  await runAiFlow(config, {});
+}
+
 /** registry 设置：按当前域分别设置 pack / publish（持久化，供 release·sync 使用） */
 async function flowRegistry(config: SejuaniConfig): Promise<void> {
   const domain = config.activeDomain;
@@ -777,6 +816,7 @@ export async function runWizard(configPath?: string): Promise<void> {
           { name: `升级组件版本  ${chalk.dim('upgrade · 按 catalog')}`, value: 'upgrade' },
           { name: `依赖分层  ${chalk.dim('deps-tree · layer-0→x / 导出 JSON')}`, value: 'deps-tree' },
           new inquirer.Separator('— 环境 —'),
+          { name: `AI 工作流  ${chalk.dim('ai · 自然语言→可审阅编排执行')}`, value: 'ai' },
           { name: `虚拟空间管理  ${chalk.dim('vs · 创建/列表/物化软链')}`, value: 'vs' },
           { name: `registry 设置  ${chalk.dim('registry · pack/publish 按域持久化')}`, value: 'registry' },
           { name: `域设置 / 切换  ${chalk.dim('domain · chery/foton/saas')}`, value: 'domain' },
@@ -806,6 +846,7 @@ export async function runWizard(configPath?: string): Promise<void> {
       else if (action === 'upgrade') await flowUpgrade(config);
       else if (action === 'deps-tree') await flowDepsTree(config);
       else if (action === 'vs') await flowVs(config);
+      else if (action === 'ai') await flowAi(config);
       else if (action === 'registry') {
         await flowRegistry(config);
         config = loadConfig(configPath); // 重载以应用新的 registry 覆盖
