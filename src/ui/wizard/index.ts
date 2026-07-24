@@ -54,8 +54,76 @@ type Action =
   | 'yunxiao'
   | 'fix'
   | 'domain'
-  | 'registry'
-  | 'quit';
+  | 'registry';
+
+/** 单个可执行操作（子菜单项）。 */
+interface MenuAction {
+  name: string;
+  value: Action;
+}
+
+/** 功能分类（顶层菜单项 → 一组操作）。 */
+interface MenuCategory {
+  key: string;
+  label: string;
+  hint: string;
+  actions: MenuAction[];
+}
+
+/**
+ * 菜单按功能域分类：顶层只列分类，进入后再选具体操作。
+ * 每层选项都控制在一屏内，配合 loop:false 关闭回绕式循环滚动。
+ */
+const MENU: MenuCategory[] = [
+  {
+    key: 'batch',
+    label: '批量编辑',
+    hint: 'package.json / yarn.lock 改写与发布',
+    actions: [
+      { name: `替换 resolved URL  ${chalk.dim('replace-url · yarn.lock')}`, value: 'replace-url' },
+      { name: `修改版本号  ${chalk.dim('set-version · package.json')}`, value: 'set-version' },
+      { name: `修改包名  ${chalk.dim('set-name · package.json')}`, value: 'set-name' },
+      { name: `创建虚拟空间  ${chalk.dim('link · 软链聚合')}`, value: 'link' },
+      { name: `仓库发布同步  ${chalk.dim('sync · pack→publish')}`, value: 'sync' },
+      { name: `完整发包  ${chalk.dim('release · build→pack→publish')}`, value: 'release' },
+    ],
+  },
+  {
+    key: 'deps',
+    label: '依赖治理 / 查询',
+    hint: '组件清单 / 反查 / 用量 / 分层',
+    actions: [
+      { name: `枚举仓库源  ${chalk.dim('registries · yarn.lock')}`, value: 'registries' },
+      { name: `校验依赖可达性  ${chalk.dim('check-deps')}`, value: 'check-deps' },
+      { name: `组件库清单  ${chalk.dim('catalog · 名称+版本')}`, value: 'catalog' },
+      { name: `组件反查工程  ${chalk.dim('who-uses')}`, value: 'who-uses' },
+      { name: `工程依赖清单  ${chalk.dim('project-deps')}`, value: 'project-deps' },
+      { name: `组件用量统计  ${chalk.dim('usage')}`, value: 'usage' },
+      { name: `升级组件版本  ${chalk.dim('upgrade · 按 catalog')}`, value: 'upgrade' },
+      { name: `依赖分层  ${chalk.dim('deps-tree · layer-0→x / 导出 JSON')}`, value: 'deps-tree' },
+    ],
+  },
+  {
+    key: 'ai',
+    label: 'AI / 云效协作',
+    hint: 'AI 工作流 · 云效工单 · 自动修复',
+    actions: [
+      { name: `AI 工作流  ${chalk.dim('ai · 自然语言→可审阅编排执行')}`, value: 'ai' },
+      { name: `云效工单管理  ${chalk.dim('issue · 查看/搜索工作项')}`, value: 'yunxiao' },
+      { name: `AI 修复 bug  ${chalk.dim('fix · 本地 AI 修复→MR→评论/状态')}`, value: 'fix' },
+    ],
+  },
+  {
+    key: 'env',
+    label: '环境 / 设置',
+    hint: '虚拟空间 · registry · 域切换',
+    actions: [
+      { name: `虚拟空间管理  ${chalk.dim('vs · 创建/列表/物化软链')}`, value: 'vs' },
+      { name: `registry 设置  ${chalk.dim('registry · pack/publish 按域持久化')}`, value: 'registry' },
+      { name: `域设置 / 切换  ${chalk.dim('domain · chery/foton/saas')}`, value: 'domain' },
+    ],
+  },
+];
 
 /** 域设置：展示当前域并切换，返回被选中的域 key */
 async function flowDomain(config: SejuaniConfig): Promise<string> {
@@ -320,87 +388,97 @@ async function flowVs(config: SejuaniConfig): Promise<void> {
   }
 }
 
-/** 交互式向导主流程 */
+/** 执行单个操作，返回（可能因域/registry 变更而重载后的）配置。 */
+async function runAction(action: Action, config: SejuaniConfig, configPath?: string): Promise<SejuaniConfig> {
+  switch (action) {
+    case 'replace-url': await flowReplaceUrl(config); break;
+    case 'set-version': await flowSetVersion(config); break;
+    case 'set-name': await flowSetName(config); break;
+    case 'link': await flowLink(config); break;
+    case 'sync': await flowSync(config); break;
+    case 'release': await flowRelease(config); break;
+    case 'registries': await flowRegistries(config); break;
+    case 'check-deps': await flowCheckDeps(config); break;
+    case 'catalog': await flowCatalog(config); break;
+    case 'who-uses': await flowWhoUses(config); break;
+    case 'project-deps': await flowProjectDeps(config); break;
+    case 'usage': await flowUsage(config); break;
+    case 'upgrade': await flowUpgrade(config); break;
+    case 'deps-tree': await flowDepsTree(config); break;
+    case 'vs': await flowVs(config); break;
+    case 'ai': await flowAi(config); break;
+    case 'yunxiao': await flowYunxiao(); break;
+    case 'fix': await flowFix(); break;
+    case 'domain':
+      await flowDomain(config);
+      return loadConfig(configPath); // 重载以应用新域的 roots/registries
+    case 'registry':
+      await flowRegistry(config);
+      return loadConfig(configPath); // 重载以应用新的 registry 覆盖
+  }
+  return config;
+}
+
+/** 交互式向导主流程：两级分类菜单（分类 → 操作），不循环滚动。 */
 export async function runWizard(configPath?: string): Promise<void> {
   let config = loadConfig(configPath);
   logger.title('Sejuani · 前端工程/组件批量与依赖治理工具');
   logger.info(
-    chalk.dim(`当前域: ${chalk.cyan(config.activeDomain)}（${config.domains[config.activeDomain]?.label ?? '?'}）  可在菜单「域设置」切换`)
+    chalk.dim(`当前域: ${chalk.cyan(config.activeDomain)}（${config.domains[config.activeDomain]?.label ?? '?'}）  可在「环境 / 设置 → 域设置」切换`)
   );
 
+  const QUIT = '__quit__';
+  const BACK = '__back__';
+
+  // 顶层：选择功能分类
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const { action } = await inquirer.prompt<{ action: Action }>([
+    const { cat } = await inquirer.prompt<{ cat: string }>([
       {
         type: 'list',
-        name: 'action',
-        message: '选择操作:',
-        pageSize: 20,
+        name: 'cat',
+        message: '选择功能分类:',
+        loop: false,
+        pageSize: MENU.length + 3,
         choices: [
-          new inquirer.Separator('— 批量编辑 —'),
-          { name: `替换 resolved URL  ${chalk.dim('replace-url · yarn.lock')}`, value: 'replace-url' },
-          { name: `修改版本号  ${chalk.dim('set-version · package.json')}`, value: 'set-version' },
-          { name: `修改包名  ${chalk.dim('set-name · package.json')}`, value: 'set-name' },
-          { name: `创建虚拟空间  ${chalk.dim('link · 软链聚合')}`, value: 'link' },
-          { name: `仓库发布同步  ${chalk.dim('sync · pack→publish')}`, value: 'sync' },
-          { name: `完整发包  ${chalk.dim('release · build→pack→publish')}`, value: 'release' },
-          new inquirer.Separator('— 依赖治理 / 查询 —'),
-          { name: `枚举仓库源  ${chalk.dim('registries · yarn.lock')}`, value: 'registries' },
-          { name: `校验依赖可达性  ${chalk.dim('check-deps')}`, value: 'check-deps' },
-          { name: `组件库清单  ${chalk.dim('catalog · 名称+版本')}`, value: 'catalog' },
-          { name: `组件反查工程  ${chalk.dim('who-uses')}`, value: 'who-uses' },
-          { name: `工程依赖清单  ${chalk.dim('project-deps')}`, value: 'project-deps' },
-          { name: `组件用量统计  ${chalk.dim('usage')}`, value: 'usage' },
-          { name: `升级组件版本  ${chalk.dim('upgrade · 按 catalog')}`, value: 'upgrade' },
-          { name: `依赖分层  ${chalk.dim('deps-tree · layer-0→x / 导出 JSON')}`, value: 'deps-tree' },
-          new inquirer.Separator('— 环境 —'),
-          { name: `AI 工作流  ${chalk.dim('ai · 自然语言→可审阅编排执行')}`, value: 'ai' },
-          { name: `云效工单管理  ${chalk.dim('issue · 查看/搜索工作项')}`, value: 'yunxiao' },
-          { name: `AI 修复 bug  ${chalk.dim('fix · 本地 AI 修复→MR→评论/状态')}`, value: 'fix' },
-          { name: `虚拟空间管理  ${chalk.dim('vs · 创建/列表/物化软链')}`, value: 'vs' },
-          { name: `registry 设置  ${chalk.dim('registry · pack/publish 按域持久化')}`, value: 'registry' },
-          { name: `域设置 / 切换  ${chalk.dim('domain · chery/foton/saas')}`, value: 'domain' },
+          ...MENU.map((c) => ({ name: `${c.label}  ${chalk.dim('· ' + c.hint)}`, value: c.key })),
           new inquirer.Separator(),
-          { name: '退出', value: 'quit' },
+          { name: '退出', value: QUIT },
         ],
       },
     ]);
+    if (cat === QUIT) break;
+    const category = MENU.find((c) => c.key === cat);
+    if (!category) continue;
 
-    if (action === 'quit') break;
-    try {
-      if (action === 'domain') {
-        await flowDomain(config);
-        config = loadConfig(configPath); // 重载以应用新域的 roots/registries
-      } else if (action === 'replace-url') await flowReplaceUrl(config);
-      else if (action === 'set-version') await flowSetVersion(config);
-      else if (action === 'set-name') await flowSetName(config);
-      else if (action === 'link') await flowLink(config);
-      else if (action === 'sync') await flowSync(config);
-      else if (action === 'release') await flowRelease(config);
-      else if (action === 'registries') await flowRegistries(config);
-      else if (action === 'check-deps') await flowCheckDeps(config);
-      else if (action === 'catalog') await flowCatalog(config);
-      else if (action === 'who-uses') await flowWhoUses(config);
-      else if (action === 'project-deps') await flowProjectDeps(config);
-      else if (action === 'usage') await flowUsage(config);
-      else if (action === 'upgrade') await flowUpgrade(config);
-      else if (action === 'deps-tree') await flowDepsTree(config);
-      else if (action === 'vs') await flowVs(config);
-      else if (action === 'ai') await flowAi(config);
-      else if (action === 'yunxiao') await flowYunxiao();
-      else if (action === 'fix') await flowFix();
-      else if (action === 'registry') {
-        await flowRegistry(config);
-        config = loadConfig(configPath); // 重载以应用新的 registry 覆盖
+    // 次级：在该分类内选择操作，直到「返回上级」
+    let back = false;
+    while (!back) {
+      const { action } = await inquirer.prompt<{ action: string }>([
+        {
+          type: 'list',
+          name: 'action',
+          message: `${category.label}:`,
+          loop: false,
+          pageSize: category.actions.length + 3,
+          choices: [
+            ...category.actions,
+            new inquirer.Separator(),
+            { name: chalk.dim('↩ 返回上级'), value: BACK },
+          ],
+        },
+      ]);
+      if (action === BACK) break;
+      try {
+        config = await runAction(action as Action, config, configPath);
+      } catch (err) {
+        logger.error((err as Error).message);
       }
-    } catch (err) {
-      logger.error((err as Error).message);
+      const { again } = await inquirer.prompt<{ again: boolean }>([
+        { type: 'confirm', name: 'again', message: `继续「${category.label}」的其它操作?`, default: true },
+      ]);
+      back = !again;
     }
-
-    const { again } = await inquirer.prompt<{ again: boolean }>([
-      { type: 'confirm', name: 'again', message: '继续其它操作?', default: true },
-    ]);
-    if (!again) break;
   }
 
   logger.info(chalk.dim('\n再见 👋'));
