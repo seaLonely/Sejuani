@@ -12,6 +12,8 @@ import { register as registerFlow } from './flow';
 import { register as registerYunxiaoConfig } from './yunxiaoConfig';
 import { register as registerIssue } from './issue';
 import { register as registerFix } from './fix';
+import { register as registerTask } from './task';
+import { register as registerAgent } from './agent';
 
 /** 依次注册所有命令组到 program。 */
 export function registerAll(program: Command): void {
@@ -28,4 +30,6 @@ export function registerAll(program: Command): void {
   registerYunxiaoConfig(program); // yunxiao-config / yxcfg
   registerIssue(program); // issue list / issue view
   registerFix(program); // fix <issueId>
+  registerTask(program); // task / task list / task do / task done
+  registerAgent(program); // agent / chat
 }

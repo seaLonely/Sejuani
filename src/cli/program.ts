@@ -29,7 +29,8 @@ ${chalk.dim('扫描工程(projects)与组件库(components)，批量编辑 packa
     'after',
     `
 ${chalk.bold('命令分类:')}
-  ${chalk.bold('交互式')}    start(默认) [-a|-w]              启动向导；默认直进批量编辑，-a 看全部分类，-w 直进云效
+  ${chalk.bold('交互式')}    start(默认) [-a|-w]              启动向导；默认直进批量编辑，-a 看全部分类，-w 直进任务看板
+  ${chalk.bold('任务管理')}  task [list|view|do|done]           任务看板 / 工单查询 / 快速流转
   ${chalk.bold('批量编辑')}  replace-url / set-version /       写操作，均走预览→确认→.bak备份→写入
               set-name / upgrade / link / sync
   ${chalk.bold('依赖治理')}  registries / check-deps /         只读，枚举仓库 / 校验依赖 / 依赖分层
@@ -37,6 +38,7 @@ ${chalk.bold('命令分类:')}
   ${chalk.bold('查询统计')}  catalog / who-uses /              只读，组件清单 / 反查 / 用量统计
               project-deps / usage
   ${chalk.bold('虚拟空间')}  vs [list|show|create|rm|link]     命名组件集合，可用 --vs 引用 / 物化软链
+  ${chalk.bold('智能Agent')} agent (chat)                     对话式开发助手（自然语言→全自动执行）
   ${chalk.bold('帮助')}      guide                             打印完整中文手册
   ${chalk.bold('域设置')}  domain [name]                     查看/切换域 chery·foton·saas
 
@@ -55,7 +57,13 @@ ${chalk.bold('典型示例:')}
   ${chalk.dim('# 交互式向导（推荐）')}
   $ sjn                                    # 默认直进「批量编辑」
   $ sjn -a                                 # 展示全部功能分类
-  $ sjn -w                                 # 直进「AI / 云效协作」
+  $ sjn -w                                 # 直进「任务看板」
+
+  ${chalk.dim('# 任务管理（云效工单）')}
+  $ sjn task                                # 交互式任务看板
+  $ sjn task list                           # 非交互式列表
+  $ sjn task do <id>                        # 快速流转到「开发中」
+  $ sjn task done <id>                      # 快速流转到「待测试」
 
   ${chalk.dim('# 组件库清单 / 用量统计 / 反查')}
   $ sjn catalog

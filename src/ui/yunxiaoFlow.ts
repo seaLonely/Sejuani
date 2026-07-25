@@ -85,6 +85,90 @@ export async function queryIssues(query: ListQuery): Promise<WorkItem[]> {
   return items;
 }
 
+/** 看板状态分组顺序（硬编码优先级）。 */
+const STATUS_ORDER = ['待处理', '开发中', '待测试', '已完成'];
+
+function statusGroup(name: string): string {
+  for (const s of STATUS_ORDER) {
+    if (name.includes(s)) return s;
+  }
+  return name || '其他';
+}
+
+/**
+ * 看板式打印工单列表：按状态分组展示，带标题头（迭代/负责人）。
+ * 返回分组后的 Map 供调用方二次使用。
+ */
+export function printBoard(
+  items: WorkItem[],
+  opts?: { sprintName?: string; assigneeName?: string }
+): Map<string, WorkItem[]> {
+  const header: string[] = [];
+  if (opts?.sprintName) header.push(`迭代: ${chalk.cyan(opts.sprintName)}`);
+  if (opts?.assigneeName) header.push(`负责人: ${chalk.cyan(opts.assigneeName)}`);
+  if (header.length) logger.info(chalk.dim(`── ${header.join(' · ')} ──`));
+
+  if (items.length === 0) {
+    logger.info(chalk.dim('  （无匹配工单）'));
+    return new Map();
+  }
+
+  // 分组
+  const groups = new Map<string, WorkItem[]>();
+  for (const item of items) {
+    const g = statusGroup(item.statusName);
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g)!.push(item);
+  }
+
+  // 按固定顺序输出
+  const orderedKeys = [...STATUS_ORDER.filter((s) => groups.has(s)), ...([...groups.keys()].filter((k) => !STATUS_ORDER.includes(k)))];
+  for (const key of orderedKeys) {
+    const list = groups.get(key)!;
+    logger.info('');
+    logger.info(chalk.bold(`${key} (${list.length})`));
+    for (const w of list) {
+      logger.info(
+        `  ${chalk.cyan(w.identifier)}  ${yunxiao.typeLabel(w.type)}  ${w.subject}  ${chalk.dim(w.assignedTo || '-')}`
+      );
+    }
+  }
+  logger.info('');
+  return groups;
+}
+
+/**
+ * 快速流转工单状态（供 CLI `task do/done` 用）。
+ * 成功返回 true，失败打 error 并返回 false。
+ */
+export async function quickTransition(issueId: string, targetStatusName: string): Promise<boolean> {
+  if (!ensureYunxiaoConfigured()) return false;
+  try {
+    const issue = await yunxiao.getWorkItem(issueId);
+    const statuses = await yunxiao.listWorkflowStatuses(issue.spaceId, issue.type);
+    const targetId = yunxiao.findStatusIdByName(statuses, targetStatusName);
+    if (!targetId) {
+      logger.error(`目标状态「${targetStatusName}」不在该工单的工作流中：${statuses.map((s) => s.name).join('/') || '(空)'}`);
+      return false;
+    }
+    if (targetId === issue.statusId) {
+      logger.info(`工单 ${chalk.cyan(issue.identifier)} 已处于「${targetStatusName}」，无需流转。`);
+      return true;
+    }
+    const chk = await yunxiao.canTransition(issue.spaceId, issue.type, issue.statusId, targetId);
+    if (!chk.ok) {
+      logger.error(`流转不合法：${issue.statusName} ✗→ ${targetStatusName}`);
+      return false;
+    }
+    await yunxiao.updateWorkItemStatus(issue.id, targetId);
+    logger.success(`${chalk.cyan(issue.identifier)} ${issue.statusName} → ${targetStatusName}`);
+    return true;
+  } catch (err) {
+    logger.error((err as Error).message);
+    return false;
+  }
+}
+
 export interface FixFlowOptions {
   /** 目标工单 id */
   issueId: string;

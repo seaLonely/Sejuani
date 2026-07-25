@@ -4,7 +4,10 @@ import {
   CreateMergeRequestInput,
   CurrentUser,
   ListQuery,
+  Member,
   MergeRequestResult,
+  NamedEntity,
+  Sprint,
   WorkflowStatus,
   WorkItem,
   WorkItemComment,
@@ -27,6 +30,11 @@ const PATHS = {
   comments: (org: string, id: string) => `/oapi/v1/projex/organizations/${org}/workitems/${id}/comments`,
   workflowStatuses: (org: string, spaceId: string) =>
     `/oapi/v1/projex/organizations/${org}/projects/${spaceId}/workitemsWorkflow/statuses`,
+  sprints: (org: string, spaceId: string) =>
+    `/oapi/v1/projex/organizations/${org}/projects/${spaceId}/sprints`,
+  projectMembers: (org: string, spaceId: string) =>
+    `/oapi/v1/projex/organizations/${org}/projects/${spaceId}/members`,
+  departments: (org: string) => `/oapi/v1/platform/organizations/${org}/departments`,
   mergeRequests: (org: string, repoId: string) =>
     `/oapi/v1/codeup/organizations/${org}/repositories/${encodeURIComponent(repoId)}/changeRequests`,
 } as const;
@@ -61,6 +69,7 @@ function pick(obj: any, keys: string[]): string {
 function toWorkItem(raw: any): WorkItem {
   const assignee = raw?.assignedTo ?? raw?.assignee ?? raw?.owner ?? {};
   const status = raw?.status ?? raw?.workflowStatus ?? {};
+  const sprint = raw?.sprint ?? raw?.iteration ?? {};
   return {
     id: pick(raw, ['id', 'identifier', 'workitemId', 'gmtId']),
     identifier: pick(raw, ['identifier', 'serialNumber', 'code']) || pick(raw, ['id']),
@@ -71,6 +80,8 @@ function toWorkItem(raw: any): WorkItem {
     assignedTo: typeof assignee === 'object' ? pick(assignee, ['name', 'displayName', 'nickName']) : String(assignee),
     assignedToId: typeof assignee === 'object' ? pick(assignee, ['id', 'userId']) : '',
     spaceId: pick(raw, ['spaceId', 'projectId', 'space']) || pick(raw?.space, ['id']),
+    sprintId: (typeof sprint === 'object' ? pick(sprint, ['id', 'identifier']) : String(sprint)) || undefined,
+    sprintName: typeof sprint === 'object' ? pick(sprint, ['name']) || undefined : undefined,
     description: pick(raw, ['description', 'content']) || undefined,
   };
 }
@@ -96,12 +107,18 @@ export async function getCurrentUser(): Promise<CurrentUser> {
  */
 export async function listWorkItems(query: ListQuery = {}): Promise<WorkItem[]> {
   const org = organizationId();
-  const spaceId = query.spaceId ?? getYunxiaoConfig().defaultProjectId;
+  const cfg = getYunxiaoConfig();
+  const spaceId = query.spaceId ?? cfg.defaultProjectId;
   if (!spaceId) {
     throw new Error(
       '未配置云效项目 id：请先执行 `sjn yunxiao-config set-project <项目 id>`，或用 `--space <项目 id>` 指定'
     );
   }
+  // 套用配置默认（迭代/负责人）；query 显式值优先，applyDefaults=false 则忽略默认。
+  const useDefaults = query.applyDefaults !== false;
+  const sprintId = query.sprintId ?? (useDefaults ? cfg.defaultSprintId : undefined);
+  const assignedToId = query.assignedToId ?? (useDefaults ? cfg.defaultAssigneeId : undefined);
+
   const limit = query.limit ?? 50;
   // category 用英文枚举（Req/Bug/Task），多值逗号分隔；未指定类型时查全部。
   const category: string = query.type ?? 'Req,Bug,Task';
@@ -114,19 +131,63 @@ export async function listWorkItems(query: ListQuery = {}): Promise<WorkItem[]> 
     orderBy: 'gmtCreate',
     sort: 'desc',
   };
+  if (sprintId) conditions.sprintId = sprintId;
 
   const res = await request<any>('POST', PATHS.searchWorkItems(org), { body: conditions });
   let items = extractList(res).map(toWorkItem);
 
   // 本地兜底过滤（assignedTo 需通过 conditions JSON 下发，此处统一在本地筛）
   if (query.type) items = items.filter((w) => w.type === query.type);
-  if (query.assignedToId) items = items.filter((w) => !w.assignedToId || w.assignedToId === query.assignedToId);
+  if (assignedToId) items = items.filter((w) => !w.assignedToId || w.assignedToId === assignedToId);
+  if (sprintId) items = items.filter((w) => !w.sprintId || w.sprintId === sprintId);
   if (query.statusName) items = items.filter((w) => w.statusName.includes(query.statusName!));
   if (query.keyword) {
     const kw = query.keyword.toLowerCase();
     items = items.filter((w) => w.subject.toLowerCase().includes(kw) || w.identifier.toLowerCase().includes(kw));
   }
   return items.slice(0, limit);
+}
+
+/** 列出项目下的迭代（Sprint）。缺省用配置里的 defaultProjectId。 */
+export async function listSprints(spaceId?: string): Promise<Sprint[]> {
+  const org = organizationId();
+  const pid = spaceId ?? getYunxiaoConfig().defaultProjectId;
+  if (!pid) {
+    throw new Error('未配置云效项目 id：请先执行 `sjn yunxiao-config set-project <项目 id>`');
+  }
+  const res = await request<any>('GET', PATHS.sprints(org, pid), { query: { page: 1, perPage: 100 } });
+  return extractList(res).map((s: any) => ({
+    id: pick(s, ['id', 'identifier', 'sprintId']),
+    name: pick(s, ['name', 'displayName']),
+    status: pick(s, ['status', 'state']) || 'TODO',
+  }));
+}
+
+/** 列出组织部门（团队）。 */
+export async function listDepartments(): Promise<NamedEntity[]> {
+  const org = organizationId();
+  const res = await request<any>('GET', PATHS.departments(org));
+  return extractList(res).map((d: any) => ({
+    id: pick(d, ['id', 'identifier', 'departmentId']),
+    name: pick(d, ['name', 'displayName']),
+  }));
+}
+
+/** 列出项目成员，可按姓名关键词过滤（服务端）。缺省用配置里的 defaultProjectId。 */
+export async function listProjectMembers(spaceId?: string, opts?: { name?: string }): Promise<Member[]> {
+  const org = organizationId();
+  const pid = spaceId ?? getYunxiaoConfig().defaultProjectId;
+  if (!pid) {
+    throw new Error('未配置云效项目 id：请先执行 `sjn yunxiao-config set-project <项目 id>`');
+  }
+  const query: Record<string, string | number> = { page: 1, perPage: 200 };
+  if (opts?.name) query.name = opts.name;
+  const res = await request<any>('GET', PATHS.projectMembers(org, pid), { query });
+  return extractList(res).map((m: any) => ({
+    id: pick(m, ['userId', 'id', 'accountId']),
+    name: pick(m, ['userName', 'name', 'displayName', 'nickName']),
+    role: pick(m, ['roleName', 'role']) || undefined,
+  }));
 }
 
 /** 获取工作项详情。 */

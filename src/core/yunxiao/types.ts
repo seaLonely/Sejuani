@@ -28,6 +28,10 @@ export interface WorkItem {
   assignedToId: string;
   /** 所属项目/空间 id（查工作流状态、创建等需要） */
   spaceId: string;
+  /** 所属迭代 id（用于按迭代筛选；可能为空） */
+  sprintId?: string;
+  /** 所属迭代名 */
+  sprintName?: string;
   /** 详情描述（getWorkItem 才填充） */
   description?: string;
 }
@@ -65,12 +69,34 @@ export interface ListQuery {
   type?: WorkItemType;
   /** 只看分配给该用户 id 的工单 */
   assignedToId?: string;
+  /** 按迭代 id 过滤（本地过滤） */
+  sprintId?: string;
   /** 关键词（标题包含），本地过滤 */
   keyword?: string;
   /** 状态名过滤，本地过滤 */
   statusName?: string;
   /** 返回条数上限，默认 50 */
   limit?: number;
+  /** 是否套用配置里的默认迭代/负责人（缺省 true）；设 false 则本次忽略默认。 */
+  applyDefaults?: boolean;
+}
+
+/** 通用「id + 名称」实体（迭代/部门/成员选择用）。 */
+export interface NamedEntity {
+  id: string;
+  name: string;
+}
+
+/** 迭代（Sprint）。 */
+export interface Sprint extends NamedEntity {
+  /** 状态：TODO(未开始) / DOING(进行中) / ARCHIVED(已完成) */
+  status: string;
+}
+
+/** 项目成员。 */
+export interface Member extends NamedEntity {
+  /** 角色名（如 管理员/成员） */
+  role?: string;
 }
 
 /** 创建 MR 的入参。 */

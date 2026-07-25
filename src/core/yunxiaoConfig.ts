@@ -21,6 +21,15 @@ export interface YunxiaoConfig {
   personalAccessToken: string;
   /** 可选：默认项目/空间 id（列表工单时缺省用） */
   defaultProjectId?: string;
+  /** 可选：默认迭代 id 与名称（筛选工单列表用） */
+  defaultSprintId?: string;
+  defaultSprintName?: string;
+  /** 可选：默认团队（组织部门）id 与名称 */
+  defaultTeamId?: string;
+  defaultTeamName?: string;
+  /** 可选：默认负责人 id 与名称（筛选工单列表用） */
+  defaultAssigneeId?: string;
+  defaultAssigneeName?: string;
 }
 
 /** state.json 中持久化的 yunxiao 片段（均可选，读取时补默认） */
@@ -29,6 +38,12 @@ interface YunxiaoConfigPatch {
   organizationId?: string;
   personalAccessToken?: string;
   defaultProjectId?: string;
+  defaultSprintId?: string;
+  defaultSprintName?: string;
+  defaultTeamId?: string;
+  defaultTeamName?: string;
+  defaultAssigneeId?: string;
+  defaultAssigneeName?: string;
 }
 
 interface SejuaniState {
@@ -37,6 +52,11 @@ interface SejuaniState {
 }
 
 const DEFAULT_ENDPOINT = 'openapi-rdc.aliyuncs.com';
+
+/** 取可选字符串：非空字符串则 trim 后返回，否则 undefined。 */
+function optStr(v: unknown): string | undefined {
+  return typeof v === 'string' && v.trim() ? v.trim() : undefined;
+}
 
 function readState(): SejuaniState {
   try {
@@ -74,20 +94,29 @@ export function getYunxiaoConfig(): YunxiaoConfig {
         : (process.env.YUNXIAO_TOKEN ?? '').trim(),
     defaultProjectId:
       typeof y.defaultProjectId === 'string' && y.defaultProjectId.trim() ? y.defaultProjectId.trim() : undefined,
+    defaultSprintId: optStr(y.defaultSprintId),
+    defaultSprintName: optStr(y.defaultSprintName),
+    defaultTeamId: optStr(y.defaultTeamId),
+    defaultTeamName: optStr(y.defaultTeamName),
+    defaultAssigneeId: optStr(y.defaultAssigneeId),
+    defaultAssigneeName: optStr(y.defaultAssigneeName),
   };
 }
 
-/** 合并写回云效配置（保留其它字段），返回写回后的生效配置。 */
+/**
+ * 合并写回云效配置（保留其它字段），返回写回后的生效配置。
+ * 语义：patch 中「出现的键」都会被应用——值为字符串则覆盖，值为 undefined 则清除该字段；
+ * 未出现的键保持原值不变。
+ */
 export function setYunxiaoConfig(patch: YunxiaoConfigPatch): YunxiaoConfig {
   const state = readState();
   const prev = state.yunxiao && typeof state.yunxiao === 'object' ? state.yunxiao : {};
-  const next: YunxiaoConfigPatch = {
-    ...prev,
-    ...(patch.endpoint !== undefined ? { endpoint: patch.endpoint } : {}),
-    ...(patch.organizationId !== undefined ? { organizationId: patch.organizationId } : {}),
-    ...(patch.personalAccessToken !== undefined ? { personalAccessToken: patch.personalAccessToken } : {}),
-    ...(patch.defaultProjectId !== undefined ? { defaultProjectId: patch.defaultProjectId } : {}),
-  };
+  const next: YunxiaoConfigPatch = { ...prev };
+  for (const key of Object.keys(patch) as (keyof YunxiaoConfigPatch)[]) {
+    const v = patch[key];
+    if (v === undefined) delete next[key];
+    else next[key] = v;
+  }
   state.yunxiao = next;
   writeState(state);
   return getYunxiaoConfig();

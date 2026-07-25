@@ -22,6 +22,9 @@ function handleConfig(action: string | undefined, value: string | undefined): vo
       ['organizationId', cfg.organizationId ? chalk.cyan(cfg.organizationId) : chalk.red('(未设置)')],
       ['token', cfg.personalAccessToken ? chalk.green(maskToken(cfg.personalAccessToken)) : chalk.red('(未设置)')],
       ['defaultProjectId', cfg.defaultProjectId ? chalk.cyan(cfg.defaultProjectId) : chalk.dim('(未设置)')],
+      ['defaultSprint', fmtNamed(cfg.defaultSprintName, cfg.defaultSprintId)],
+      ['defaultTeam', fmtNamed(cfg.defaultTeamName, cfg.defaultTeamId)],
+      ['defaultAssignee', fmtNamed(cfg.defaultAssigneeName, cfg.defaultAssigneeId)],
     ]);
     logger.section('本地 AI 编码工具');
     logger.table(
@@ -56,6 +59,21 @@ function handleConfig(action: string | undefined, value: string | undefined): vo
       setYunxiaoConfig({ defaultProjectId: value });
       logger.success(`已设置 defaultProjectId: ${value}`);
       return;
+    case 'set-sprint':
+      setYunxiaoConfig({ defaultSprintId: value, defaultSprintName: undefined });
+      logger.success(`已设置默认迭代 id: ${value}`);
+      logger.hint('提示：用向导「云效默认设置」可按列表选择并记录迭代名称。');
+      return;
+    case 'set-team':
+      setYunxiaoConfig({ defaultTeamId: value, defaultTeamName: undefined });
+      logger.success(`已设置默认团队(部门) id: ${value}`);
+      logger.hint('提示：用向导「云效默认设置」可按列表选择并记录团队名称。');
+      return;
+    case 'set-assignee':
+      setYunxiaoConfig({ defaultAssigneeId: value, defaultAssigneeName: undefined });
+      logger.success(`已设置默认负责人 id: ${value}`);
+      logger.hint('提示：用向导「云效默认设置」可按列表选择并记录负责人名称。');
+      return;
     case 'set-coder':
       if (!isCoderTool(value)) {
         logger.error(`未知编码工具: ${value}。可用: ${CODER_TOOLS.join(' / ')}`);
@@ -67,10 +85,16 @@ function handleConfig(action: string | undefined, value: string | undefined): vo
       return;
     default:
       logger.error(
-        `未知操作: ${action}。可用: show / set-token <t> / set-org <id> / set-endpoint <url> / set-project <id> / set-coder <${CODER_TOOLS.join('|')}>`
+        `未知操作: ${action}。可用: show / set-token <t> / set-org <id> / set-endpoint <url> / set-project <id> / set-sprint <id> / set-team <id> / set-assignee <id> / set-coder <${CODER_TOOLS.join('|')}>`
       );
       process.exitCode = 1;
   }
+}
+
+/** 展示「名称(id)」或仅 id，未设置显示灰字。 */
+function fmtNamed(name: string | undefined, id: string | undefined): string {
+  if (!id) return chalk.dim('(未设置)');
+  return name ? chalk.cyan(`${name} (${id})`) : chalk.cyan(id);
 }
 
 /** 注册 yunxiao-config 命令。 */
@@ -78,7 +102,7 @@ export function register(program: Command): void {
   program
     .command('yunxiao-config [action] [value]')
     .alias('yxcfg')
-    .description('云效接入配置：show | set-token <t> | set-org <id> | set-endpoint <url> | set-project <id> | set-coder <tool>')
+    .description('云效接入配置：show | set-token <t> | set-org <id> | set-endpoint <url> | set-project <id> | set-sprint <id> | set-team <id> | set-assignee <id> | set-coder <tool>')
     .action((action: string | undefined, value: string | undefined) => {
       handleConfig(action, value);
     });

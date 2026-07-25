@@ -5,7 +5,9 @@ import {
   parseTypeFilter,
   printIssueDetail,
   printIssueList,
+  quickTransition,
 } from '../../ui/yunxiaoFlow';
+import { flowTaskBoard } from '../../ui/wizard/yunxiao';
 import * as yunxiao from '../../core/yunxiao/api';
 import { ListQuery } from '../../core/yunxiao/types';
 
@@ -17,11 +19,10 @@ interface ListOpts {
   limit?: string;
   space?: string;
   sprint?: string;
-  /** commander 对 --no-defaults 生成 defaults:false */
   defaults?: boolean;
 }
 
-/** issue list：按条件拉取工作项并表格化展示。 */
+/** task list：非交互列表（复用 issue list 逻辑）。 */
 async function handleList(opts: ListOpts): Promise<void> {
   if (!ensureYunxiaoConfigured()) {
     process.exitCode = 1;
@@ -56,7 +57,7 @@ async function handleList(opts: ListOpts): Promise<void> {
   }
 }
 
-/** issue view <id>：展示工作项详情与最近评论。 */
+/** task view <id>：查看详情。 */
 async function handleView(id: string): Promise<void> {
   if (!ensureYunxiaoConfigured()) {
     process.exitCode = 1;
@@ -72,13 +73,30 @@ async function handleView(id: string): Promise<void> {
   }
 }
 
-/** 注册 issue 命令组（list / view）。 */
-export function register(program: Command): void {
-  const issue = program.command('issue').description('云效工单：查看与搜索工作项（需求/缺陷/任务）');
+/** task do <id>：快速流转到「开发中」。 */
+async function handleDo(id: string): Promise<void> {
+  const ok = await quickTransition(id, '开发中');
+  if (!ok) process.exitCode = 1;
+}
 
-  issue
+/** task done <id>：快速流转到「待测试」。 */
+async function handleDone(id: string): Promise<void> {
+  const ok = await quickTransition(id, '待测试');
+  if (!ok) process.exitCode = 1;
+}
+
+/** 注册 task 命令组。 */
+export function register(program: Command): void {
+  const task = program
+    .command('task')
+    .description('任务看板：交互式管理云效工单（查看/流转/评论）')
+    .action(async () => {
+      await flowTaskBoard();
+    });
+
+  task
     .command('list')
-    .description('列出工作项，可按类型/负责人/状态/关键词过滤')
+    .description('列出工作项（非交互），支持按类型/迭代/状态等过滤')
     .option('--type <type>', '类型过滤：bug | req | task')
     .option('--mine', '只看分配给自己的工单', false)
     .option('--status <status>', '按状态名过滤（本地包含匹配）')
@@ -91,10 +109,24 @@ export function register(program: Command): void {
       await handleList(opts);
     });
 
-  issue
+  task
     .command('view <id>')
-    .description('查看单个工作项详情与最近评论')
+    .description('查看单个工作项详情与评论')
     .action(async (id: string) => {
       await handleView(id);
+    });
+
+  task
+    .command('do <id>')
+    .description('快速流转工单到「开发中」')
+    .action(async (id: string) => {
+      await handleDo(id);
+    });
+
+  task
+    .command('done <id>')
+    .description('快速流转工单到「待测试」')
+    .action(async (id: string) => {
+      await handleDone(id);
     });
 }

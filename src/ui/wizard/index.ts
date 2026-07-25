@@ -32,7 +32,7 @@ import {
 import { flowCatalog, flowWhoUses, flowProjectDeps, flowUsage } from './query';
 import { flowRegistries, flowCheckDeps, flowDepsTree } from './deps';
 import { flowAi } from './ai';
-import { flowYunxiao, flowFix } from './yunxiao';
+import { flowYunxiao, flowFix, flowYunxiaoSettings, flowTaskBoard } from './yunxiao';
 
 type Action =
   | 'replace-url'
@@ -52,6 +52,8 @@ type Action =
   | 'vs'
   | 'ai'
   | 'yunxiao'
+  | 'yunxiao-settings'
+  | 'task-board'
   | 'fix'
   | 'domain'
   | 'registry';
@@ -106,11 +108,12 @@ const MENU: MenuCategory[] = [
   {
     key: 'ai',
     label: 'AI / 云效协作',
-    hint: 'AI 工作流 · 云效工单 · 自动修复',
+    hint: '任务看板 · AI 工作流 · 自动修复',
     actions: [
+      { name: `任务看板  ${chalk.dim('当前迭代工单 + 操作')}`, value: 'task-board' },
       { name: `AI 工作流  ${chalk.dim('ai · 自然语言→可审阅编排执行')}`, value: 'ai' },
-      { name: `云效工单管理  ${chalk.dim('issue · 查看/搜索工作项')}`, value: 'yunxiao' },
       { name: `AI 修复 bug  ${chalk.dim('fix · 本地 AI 修复→MR→评论/状态')}`, value: 'fix' },
+      { name: `云效默认设置  ${chalk.dim('默认迭代/团队/负责人')}`, value: 'yunxiao-settings' },
     ],
   },
   {
@@ -408,6 +411,8 @@ async function runAction(action: Action, config: SejuaniConfig, configPath?: str
     case 'vs': await flowVs(config); break;
     case 'ai': await flowAi(config); break;
     case 'yunxiao': await flowYunxiao(); break;
+    case 'task-board': await flowTaskBoard(); break;
+    case 'yunxiao-settings': await flowYunxiaoSettings(); break;
     case 'fix': await flowFix(); break;
     case 'domain':
       await flowDomain(config);
@@ -436,11 +441,19 @@ export async function runWizard(configPath?: string, entry: string = 'batch'): P
   const BACK = '__back__';
 
   // 起始直进分类：entry 命中某分类则跳过首屏选择；'all' 或返回后置空，下一轮展示分类选择。
+  // 'task' 特殊入口：直接进入任务看板，不进分类菜单。
   let pending: string | null = entry === 'all' ? null : entry;
 
   // 顶层：选择功能分类
   // eslint-disable-next-line no-constant-condition
   while (true) {
+    // 特殊入口 'task' 直达看板
+    if (pending === 'task') {
+      pending = null;
+      await flowTaskBoard();
+      continue; // 看板退出后回到分类选择
+    }
+
     let cat: string;
     if (pending) {
       cat = pending;
