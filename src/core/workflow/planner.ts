@@ -173,7 +173,7 @@ export async function planWorkflow(
     dependentComponents: impact.dependentComponents,
   });
   for (let attempt = 0; ; attempt++) {
-    const raw = await chatJSON(messages);
+    const raw = await chatJSON(messages, { role: 'planner' });
     try {
       const spec = normalizeSpec(raw, ctx, id);
       logEvent('info', 'plan.result', { specId: spec.id, title: spec.title, steps: spec.steps, attempt });

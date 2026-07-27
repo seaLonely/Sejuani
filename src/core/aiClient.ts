@@ -1,7 +1,7 @@
 import http from 'http';
 import https from 'https';
 import { URL } from 'url';
-import { getAiConfig } from './state/aiConfig';
+import { getAiConfig, AiRole } from './state/aiConfig';
 import { logEvent } from '../utils/fileLogger';
 
 /**
@@ -44,6 +44,8 @@ export interface ChatToolsOptions {
   tools: ToolFunction[];
   /** 可选中止信号（兼容 AbortSignal）：触发后销毁进行中的请求 */
   signal?: AbortLike;
+  /** S1 场景角色：按 roles 绑定解析 profile（chat/agentTask 等） */
+  role?: AiRole;
 }
 
 /** 轻量中止信号接口（结构兼容 Node 16.14+ 的 AbortSignal） */
@@ -75,6 +77,8 @@ export interface ChatJSONOptions {
   temperature?: number;
   /** 请求超时(ms)，默认 60000 */
   timeoutMs?: number;
+  /** S1 场景角色：按 roles 绑定解析 profile（planner/compress 等） */
+  role?: AiRole;
 }
 
 /** 拼接 chat completions 的完整 URL（兼容 baseURL 末尾是否带 /v1、是否带斜杠） */
@@ -187,7 +191,7 @@ export function extractJsonObject(text: string): any {
  * 失败时抛出带清晰信息的 Error（鉴权/超时/HTTP 错误/解析失败）。
  */
 export async function chatJSON(messages: ChatMessage[], opts: ChatJSONOptions = {}): Promise<any> {
-  const cfg = getAiConfig();
+  const cfg = getAiConfig(opts.role);
   if (!cfg.apiKey) {
     throw new Error('未配置 AI apiKey。请先执行 `sjn ai config set-key <key>`（或设置环境变量 OPENAI_API_KEY）。');
   }
@@ -252,7 +256,7 @@ export async function chatWithTools(
   messages: ChatMessage[],
   opts: ChatToolsOptions
 ): Promise<ChatToolsResult> {
-  const cfg = getAiConfig();
+  const cfg = getAiConfig(opts.role);
   if (!cfg.apiKey) {
     throw new Error('未配置 AI apiKey。请先执行 `sjn ai-config set-key <key>`（或设置环境变量 OPENAI_API_KEY）。');
   }
@@ -354,7 +358,7 @@ export async function chatJSONWithUsage(
   messages: ChatMessage[],
   opts: ChatJSONOptions = {}
 ): Promise<{ data: any; usage?: AiUsage }> {
-  const cfg = getAiConfig();
+  const cfg = getAiConfig(opts.role);
   if (!cfg.apiKey) {
     throw new Error('未配置 AI apiKey。请先执行 `sjn ai config set-key <key>`（或设置环境变量 OPENAI_API_KEY）。');
   }
@@ -396,7 +400,7 @@ export async function chatWithToolsStream(
   opts: ChatToolsOptions,
   onDelta: (text: string) => void
 ): Promise<ChatToolsResult> {
-  const cfg = getAiConfig();
+  const cfg = getAiConfig(opts.role);
   if (!cfg.apiKey) {
     throw new Error('未配置 AI apiKey。请先执行 `sjn ai-config set-key <key>`（或设置环境变量 OPENAI_API_KEY）。');
   }

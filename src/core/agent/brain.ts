@@ -5,6 +5,7 @@ import { AgentContext, ConfirmAnswer } from './types';
 import { getAllTools, getToolByName, getToolFunctions, getSystemPromptContext } from './registry';
 import { SejuaniConfig, DOMAINS } from '../config';
 import { AgentStats, appendAudit, digestArgs, loadSession, saveSession } from './sessionStore';
+import { renderMemory } from './memory';
 
 /**
  * Agent Brain：管理对话上下文、组装 system prompt、调 LLM、解析 tool_calls、调度执行。
@@ -35,11 +36,15 @@ export interface BrainOptions {
   grantedTools?: string[];
   /** 单轮最大 tool_calls 循环次数（缺省 10；agent.task 置 6 控制无人值守成本） */
   maxRounds?: number;
+  /** S1 模型角色（缺省 chat；agent.task 传 agentTask 以使用巡检专用模型） */
+  aiRole?: 'chat' | 'agentTask';
 }
 
 export interface ProcessOptions {
   /** 流式增量回调：提供时走流式请求（上游不支持时自动回落非流式） */
   onDelta?: (text: string) => void;
+  /** 不下发工具（Harness 收尾总结用）：强制纯文本单轮，不会触发 tool_calls */
+  noTools?: boolean;
 }
 
 /** 轻量中止信号（结构兼容 AbortLike，不依赖全局 AbortController） */
@@ -78,6 +83,10 @@ export class AgentBrain {
   private abortRequested = false;
   /** 是否正在处理一轮对话 */
   private processing = false;
+  /** Harness 注入的防循环护卫（普通聊天模式为 null，零开销） */
+  private loopGuard: { record(t: string, h: string): void; repeatedCall(): string | null } | null = null;
+  /** 防循环警告暂存：待全部 tool 消息 push 后才能注入 system（保护 tool_calls 协议） */
+  private pendingLoopWarns: string[] = [];
 
   constructor(config: SejuaniConfig, opts: BrainOptions = {}) {
     const domainCfg = DOMAINS[config.activeDomain as keyof typeof DOMAINS];
@@ -90,6 +99,7 @@ export class AgentBrain {
       confirm: async () => true, // REPL/serve 层会覆盖
       grantedTools: new Set<string>(opts.grantedTools ?? []),
       print: (text) => logger.info(text),
+      todos: [],
     };
     // 从 sessionStore 恢复历史（system prompt 用最新配置重建，其余沿用）
     if (opts.sessionId && opts.resume) {
@@ -99,6 +109,7 @@ export class AgentBrain {
         this.ctx.history = [this.ctx.history[0], ...rest];
         this.createdAt = rec.createdAt;
         if (rec.stats) this.stats = rec.stats;
+        if (rec.todos) this.ctx.todos = rec.todos;
       }
     }
   }
@@ -146,6 +157,21 @@ export class AgentBrain {
     return { ...this.stats };
   }
 
+  /** 当前域（供 REPL /memory 等命令定位记忆存储） */
+  getDomain(): string {
+    return this.ctx.domain;
+  }
+
+  /** 当前任务清单（Harness 读完成度） */
+  getTodos(): import('./todo').TodoItem[] {
+    return this.ctx.todos;
+  }
+
+  /** 注入防循环护卫（Harness 自主循环时启用；传 null 关闭） */
+  setLoopGuard(guard: { record(t: string, h: string): void; repeatedCall(): string | null } | null): void {
+    this.loopGuard = guard;
+  }
+
   /** 是否正在处理一轮对话 */
   isProcessing(): boolean {
     return this.processing;
@@ -172,10 +198,12 @@ export class AgentBrain {
       this.ctx.history.push({ role: 'user', content: userInput });
 
       const allowSet = this.opts.allowTools ? new Set(this.opts.allowTools) : null;
-      const toolFunctions = allowSet
-        ? getToolFunctions().filter((f) => allowSet.has(f.name))
-        : getToolFunctions();
-      const maxRounds = this.opts.maxRounds ?? MAX_TOOL_ROUNDS;
+      const toolFunctions = procOpts.noTools
+        ? []
+        : allowSet
+          ? getToolFunctions().filter((f) => allowSet.has(f.name))
+          : getToolFunctions();
+      const maxRounds = procOpts.noTools ? 1 : (this.opts.maxRounds ?? MAX_TOOL_ROUNDS);
       let rounds = 0;
 
       while (rounds < maxRounds) {
@@ -190,6 +218,7 @@ export class AgentBrain {
             tools: toolFunctions,
             timeoutMs: 120000,
             signal: this.currentAbort,
+            role: this.opts.aiRole ?? ('chat' as const),
           };
           result = procOpts.onDelta
             ? await chatWithToolsStream(this.ctx.history, callOpts, procOpts.onDelta)
@@ -221,6 +250,13 @@ export class AgentBrain {
           result.toolCalls.forEach((tc, i) => {
             this.ctx.history.push({ role: 'tool', content: outputs[i], tool_call_id: tc.id });
           });
+          // 防循环警告统一在全部 tool 消息之后注入（不能插在 assistant.tool_calls 与 tool 之间，否则下一轮请求 400）
+          if (this.pendingLoopWarns.length > 0) {
+            for (const warn of this.pendingLoopWarns) {
+              this.ctx.history.push({ role: 'system', content: warn });
+            }
+            this.pendingLoopWarns = [];
+          }
           this.stats.toolCalls += result.toolCalls.length;
           if (this.abortRequested) return this.finish('[已取消] 已中断剩余执行。');
           continue;
@@ -287,6 +323,13 @@ export class AgentBrain {
       return JSON.stringify({ success: false, output: `工具参数解析失败: ${tc.function.arguments}` });
     }
 
+    // Harness 防循环埋点：记录调用签名（脉方 digestArgs 脱敏）；命中重复则暂存警告（不在此直接 push，避免破坏 tool_calls 协议）
+    if (this.loopGuard) {
+      this.loopGuard.record(tool.name, digestArgs(args));
+      const warn = this.loopGuard.repeatedCall();
+      if (warn) this.pendingLoopWarns.push(warn);
+    }
+
     // 危险操作需确认（会话内已授权的工具跳过）
     let confirmedLabel = 'none';
     if (tool.needsConfirm) {
@@ -346,6 +389,7 @@ export class AgentBrain {
         updatedAt: new Date().toISOString(),
         history: this.ctx.history,
         stats: this.stats,
+        todos: this.ctx.todos.length > 0 ? this.ctx.todos : undefined,
       });
     } catch {
       /* 持久化失败不影响对话 */
@@ -390,7 +434,7 @@ export class AgentBrain {
           },
           { role: 'user', content: JSON.stringify(removed).slice(0, 12000) },
         ],
-        { timeoutMs: 30000 }
+        { timeoutMs: 30000, role: 'compress' }
       );
       const summary = typeof res?.summary === 'string' ? res.summary.trim() : '';
       if (summary) {
@@ -420,6 +464,7 @@ export class AgentBrain {
   private buildSystemPrompt(config: SejuaniConfig): string {
     const domainCfg = DOMAINS[config.activeDomain as keyof typeof DOMAINS];
     const capabilities = getSystemPromptContext();
+    const memorySection = renderMemory(config.activeDomain);
     return [
       '你是 Sejuani Agent——一个面向前端工程的智能开发助手，运行在终端 CLI 中。',
       '你可以通过调用工具来管理组件/工程仓库、执行批量工作流、管理云效工单、自动化任务流程、检测开发环境、调用编码工具。',
@@ -439,6 +484,9 @@ export class AgentBrain {
       '5. 输出简洁有信息量，避免冗长',
       '6. 用中文回复',
       '7. 你可以在会话内直接规划并执行工作流（workflow_plan 规划并保存 → workflow_run 执行）；执行中的危险步骤会逐一征求用户确认，无需让用户去终端执行命令',
+      '8. 你有长期记忆：当用户表达偏好、纠正你、约定命名/流程或确认重要项目事实时，用 memory_write 记住；记忆随下方【长期记忆】段注入',
+      '9. 编码任务选择准则：中小改动（定位→精确编辑→验证）用内建 code_* 工具自主完成；预估改动超 5 个文件、需长时推理、或用户点名外部工具时，用 coder 工具委托 claude/codex',
+      memorySection ? '\n' + memorySection : '',
     ].join('\n');
   }
 

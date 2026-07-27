@@ -4,6 +4,7 @@ import { EventHub } from '../hub';
 import { SejuaniConfig } from '../../core/config';
 import { aiConfigured } from '../../core/state/aiConfig';
 import { AgentBrain } from '../../core/agent/brain';
+import { AgentHarness } from '../../core/agent/harness';
 import { getAllTools } from '../../core/agent/registry';
 import { listSessions, loadSession } from '../../core/agent/sessionStore';
 
@@ -164,6 +165,50 @@ export function registerAgentRoutes(router: Router, hub: EventHub, config: Sejua
     } catch (err) {
       const msg = (err as Error).message;
       hub.publish(channelOf(session.id), 'error', { error: msg });
+      sendError(r.res, 500, msg);
+    } finally {
+      session.busy = false;
+      session.lastActiveAt = Date.now();
+    }
+  });
+
+  // 自主目标模式（H1）：Harness.runGoal 跑到终局，进度经 SSE harness 事件推送
+  router.post('/api/agent/goal', async (r) => {
+    const { sessionId, goal, budget } = r.body ?? {};
+    const session = sessions.get(String(sessionId ?? ''));
+    if (!session) {
+      sendError(r.res, 404, `会话不存在: ${sessionId}（先 POST /api/agent/session 创建）`);
+      return;
+    }
+    if (typeof goal !== 'string' || !goal.trim()) {
+      sendError(r.res, 400, 'goal 不能为空');
+      return;
+    }
+    if (session.busy) {
+      sendError(r.res, 409, '该会话正在处理中，请等待完成。');
+      return;
+    }
+    if (!aiConfigured()) {
+      sendError(r.res, 400, '尚未配置 AI apiKey。');
+      return;
+    }
+    session.busy = true;
+    session.lastActiveAt = Date.now();
+    const ch = channelOf(session.id);
+    const harness = AgentHarness.fromBrain(session.brain, {
+      budget: budget && typeof budget === 'object' ? budget : undefined,
+      memoryDomain: config.activeDomain,
+      reportId: session.id,
+      onDelta: (text) => hub.publish(ch, 'delta', { text }),
+      onProgress: (e) => hub.publish(ch, 'harness-progress', e),
+    });
+    try {
+      const result = await harness.runGoal(goal.trim());
+      hub.publish(ch, 'harness-finish', result);
+      sendJson(r.res, 200, result);
+    } catch (err) {
+      const msg = (err as Error).message;
+      hub.publish(ch, 'error', { error: msg });
       sendError(r.res, 500, msg);
     } finally {
       session.busy = false;

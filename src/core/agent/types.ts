@@ -1,6 +1,7 @@
 import { SejuaniConfig } from '../config';
 import { PromptInputFn } from '../types';
 import { ChatMessage } from '../aiClient';
+import { TodoItem } from './todo';
 
 /**
  * Agent 系统核心类型定义。
@@ -56,6 +57,8 @@ export interface AgentContext {
   promptInput?: PromptInputFn;
   /** 输出到终端（非 LLM 的直接输出） */
   print(text: string): void;
+  /** Harness 任务清单（H1）：todo_write/read 工具读写，harness 读完成度 */
+  todos: TodoItem[];
 }
 
 /** 能力模块（一组相关工具的集合） */

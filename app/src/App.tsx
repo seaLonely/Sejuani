@@ -2,13 +2,14 @@ import { createContext, useContext, useEffect, useState } from 'react';
 import { HashRouter, NavLink, Route, Routes } from 'react-router-dom';
 import { api } from './api/client';
 import { Separator } from '@/components/ui/separator';
-import { MessageSquare, LayoutGrid, Workflow, Layers, BarChart3, Settings as SettingsIcon } from 'lucide-react';
+import { MessageSquare, LayoutGrid, Workflow, Layers, BarChart3, Settings as SettingsIcon, Brain } from 'lucide-react';
 import Chat from './pages/Chat';
 import Dashboard from './pages/Dashboard';
 import Board from './pages/Board';
 import Workflows from './pages/Workflows';
 import Batch from './pages/Batch';
 import Settings from './pages/Settings';
+import Memory from './pages/Memory';
 import logoSvg from './assets/logo.svg';
 
 const BackendContext = createContext(false);
@@ -18,6 +19,7 @@ const NAV_SMART = [
   { to: '/chat', label: 'Agent 对话', icon: MessageSquare },
   { to: '/board', label: '任务看板', icon: LayoutGrid },
   { to: '/workflows', label: '工作流', icon: Workflow },
+  { to: '/memory', label: '记忆与模型', icon: Brain },
 ];
 
 const NAV_MANAGE = [
@@ -113,6 +115,7 @@ export default function App() {
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/board" element={<Board />} />
               <Route path="/workflows" element={<Workflows />} />
+              <Route path="/memory" element={<Memory />} />
               <Route path="/batch" element={<Batch />} />
               <Route path="/settings" element={<Settings />} />
             </Routes>

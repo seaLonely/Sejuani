@@ -7,6 +7,7 @@ import { registerDepsRoutes } from './routes/deps';
 import { registerYunxiaoRoutes } from './routes/yunxiao';
 import { registerWorkflowRoutes } from './routes/workflows';
 import { registerHookRoutes } from './routes/hooks';
+import { registerMemoryRoutes } from './routes/memory';
 import { registerBatchRoutes } from './routes/batch';
 import { registerConfigRoutes } from './routes/config';
 import { readPkgVersion } from '../utils/pkgVersion';
@@ -46,6 +47,7 @@ export async function startServer(opts: ServeOptions): Promise<http.Server> {
   registerYunxiaoRoutes(router);
   registerWorkflowRoutes(router, hub, opts.config);
   registerHookRoutes(router, opts.config);
+  registerMemoryRoutes(router, opts.config);
   registerBatchRoutes(router, opts.config);
   registerConfigRoutes(router);
 

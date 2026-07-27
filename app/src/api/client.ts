@@ -49,7 +49,7 @@ export function subscribe(
     }
   };
   es.onmessage = handler;
-  for (const name of ['tool', 'confirm', 'log', 'step', 'event']) {
+  for (const name of ['tool', 'confirm', 'log', 'step', 'event', 'delta', 'harness-progress', 'harness-finish', 'done', 'error']) {
     es.addEventListener(name, handler as EventListener);
   }
   if (onError) es.onerror = onError;

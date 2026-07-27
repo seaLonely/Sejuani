@@ -61,6 +61,8 @@ export default function Chat() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmReq, setConfirmReq] = useState<PendingConfirm | null>(null);
+  const [goalMode, setGoalMode] = useState(false);
+  const [harnessInfo, setHarnessInfo] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   const newSession = useCallback(async () => {
@@ -102,6 +104,18 @@ export default function Chat() {
             id: pickText(data, ['id', 'confirmId']),
             prompt: pickText(data, ['message', 'prompt', 'command', 'detail']) || '后端请求确认一个操作',
           });
+        } else if (type === 'harness-progress') {
+          const it = pick(data, ['iteration']);
+          const todos = pick(data, ['todos']);
+          const et = pickText(data, ['type']);
+          if (et === 'iteration-start') setHarnessInfo(`自主执行中·迭代 ${it ?? ''}`);
+          else if (et === 'budget-warn' || et === 'loop-warn') setHarnessInfo(`${et}: ${pickText(data, ['reason'])}`);
+          if (Array.isArray(todos)) {
+            const done = todos.filter((t) => pickText(t, ['status']) === 'done').length;
+            setHarnessInfo(`自主执行中·任务 ${done}/${todos.length}`);
+          }
+        } else if (type === 'harness-finish') {
+          setHarnessInfo(`终局：${pickText(data, ['outcome'])}`);
         }
       },
     );
@@ -118,6 +132,7 @@ export default function Chat() {
     setMessages((prev) => [...prev, { kind: 'user', text }]);
     setSending(true);
     setError(null);
+    setHarnessInfo(null);
     try {
       let sid = sessionId;
       if (!sid) {
@@ -125,12 +140,20 @@ export default function Chat() {
         sid = pickText(res, ['sessionId', 'id']);
         setSessionId(sid);
       }
-      const res = await api.post<Record<string, unknown>>('/api/agent/chat', {
-        sessionId: sid,
-        input: text,
-      });
-      const reply = pickText(res, ['reply', 'text', 'output', 'message']) || JSON.stringify(res);
-      setMessages((prev) => [...prev, { kind: 'assistant', text: reply }]);
+      if (goalMode) {
+        // 自主目标模式：Harness runGoal
+        const res = await api.post<Record<string, unknown>>('/api/agent/goal', { sessionId: sid, goal: text });
+        const outcome = pickText(res, ['outcome']);
+        const summary = pickText(res, ['summary']) || JSON.stringify(res);
+        setMessages((prev) => [...prev, { kind: 'assistant', text: `[终局 ${outcome}]\n${summary}` }]);
+      } else {
+        const res = await api.post<Record<string, unknown>>('/api/agent/chat', {
+          sessionId: sid,
+          input: text,
+        });
+        const reply = pickText(res, ['reply', 'text', 'output', 'message']) || JSON.stringify(res);
+        setMessages((prev) => [...prev, { kind: 'assistant', text: reply }]);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -157,6 +180,11 @@ export default function Chat() {
           <MessageSquare className="w-5 h-5" /> Agent 对话
         </h2>
         <div className="flex items-center gap-3">
+          {harnessInfo && <Badge variant="secondary" className="text-xs">{harnessInfo}</Badge>}
+          <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
+            <input type="checkbox" checked={goalMode} onChange={(e) => setGoalMode(e.target.checked)} />
+            自主目标模式
+          </label>
           <span className="font-mono text-xs text-muted-foreground">
             {sessionId ? `会话 ${sessionId.slice(0, 8)}…` : '未建立会话'}
           </span>

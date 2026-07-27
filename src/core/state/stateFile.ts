@@ -1,7 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import type { AiConfigPatch } from './aiConfig';
+import type { AiConfigState } from './aiConfig';
 import type { YunxiaoConfigPatch } from './yunxiaoConfig';
 import type { CoderConfigPatch } from './coderConfig';
 import type { VirtualSpace } from './virtualSpaces';
@@ -26,8 +26,8 @@ export interface SejuaniState {
   virtualSpaces?: Record<string, VirtualSpace>;
   /** 按域的 registry 覆盖 */
   registryOverrides?: Record<string, RegistryOverride>;
-  /** AI 接入配置片段 */
-  ai?: AiConfigPatch;
+  /** AI 接入配置片段（S1 多 profile；兼容旧扁平字段） */
+  ai?: AiConfigState;
   /** 云效接入配置片段 */
   yunxiao?: YunxiaoConfigPatch;
   /** 编码工具配置片段 */

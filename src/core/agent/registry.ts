@@ -8,6 +8,9 @@ import { workflowCapability } from './capabilities/workflow';
 import { taskFlowCapability } from './capabilities/taskFlow';
 import { envCapability } from './capabilities/env';
 import { coderCapability } from './capabilities/coder';
+import { memoryCapability } from './capabilities/memory';
+import { todoCapability } from './capabilities/todo';
+import { codeCapability } from './capabilities/code';
 
 /**
  * 工具注册表：收集全部 Capability 模块，展平成 tools 数组供 brain 使用。
@@ -20,6 +23,9 @@ const ALL_CAPABILITIES: Capability[] = [
   taskFlowCapability,
   envCapability,
   coderCapability,
+  memoryCapability,
+  todoCapability,
+  codeCapability,
 ];
 
 /** 展平后的全部工具 */

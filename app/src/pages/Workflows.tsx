@@ -54,6 +54,7 @@ export default function Workflows() {
   const [detail, setDetail] = useState<Record<string, unknown> | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [acting, setActing] = useState(false);
+  const [approvals, setApprovals] = useState<unknown[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
 
   const loadList = useCallback(() => {
@@ -72,6 +73,28 @@ export default function Workflows() {
   }, []);
 
   useEffect(loadList, [loadList]);
+
+  const loadApprovals = useCallback(() => {
+    api
+      .get<unknown[]>('/api/workflows/approvals')
+      .then((res) => setApprovals(Array.isArray(res) ? res : []))
+      .catch(() => setApprovals([]));
+  }, []);
+
+  useEffect(() => {
+    loadApprovals();
+    const t = setInterval(loadApprovals, 8000);
+    return () => clearInterval(t);
+  }, [loadApprovals]);
+
+  const decideApproval = async (execId: string, decision: 'approve' | 'reject') => {
+    try {
+      await api.post(`/api/workflows/executions/${encodeURIComponent(execId)}/${decision}`);
+      loadApprovals();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   const loadDetail = useCallback((id: string) => {
     setDetail(null);
@@ -131,6 +154,22 @@ export default function Workflows() {
       {error && (
         <div className="mx-5 mt-3 rounded-lg bg-destructive/10 border border-destructive/30 text-destructive text-sm p-3">
           {error}
+        </div>
+      )}
+
+      {approvals.length > 0 && (
+        <div className="mx-5 mt-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-sm p-3 space-y-2">
+          <div className="font-medium text-amber-600">待批准执行（{approvals.length}）</div>
+          {approvals.map((a, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <span className="font-mono text-xs">{pickText(a, ['execId'])}</span>
+              <span className="text-muted-foreground text-xs">{pickText(a, ['pendingStep.title', 'pendingStep.kind'])}</span>
+              <div className="ml-auto flex gap-1.5">
+                <Button size="sm" onClick={() => decideApproval(pickText(a, ['execId']), 'approve')}>批准</Button>
+                <Button size="sm" variant="outline" onClick={() => decideApproval(pickText(a, ['execId']), 'reject')}>拒绝</Button>
+              </div>
+            </div>
+          ))}
         </div>
       )}
 

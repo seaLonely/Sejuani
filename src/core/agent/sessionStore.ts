@@ -29,6 +29,8 @@ export interface AgentSessionRecord {
   updatedAt: string;
   history: ChatMessage[];
   stats?: AgentStats;
+  /** Harness 任务清单快照（H1，向后兼容） */
+  todos?: import('./todo').TodoItem[];
 }
 
 /** 工具调用审计条目（argsDigest 已脱敏） */
