@@ -5,8 +5,8 @@ import {
   setYunxiaoConfig,
   maskToken,
   yunxiaoStateFilePath,
-} from '../../core/yunxiaoConfig';
-import { listCoders, setActiveCoder, isCoderTool, CODER_TOOLS } from '../../core/coderConfig';
+} from '../../core/state/yunxiaoConfig';
+import { listCoders, setActiveCoder, isCoderTool, CODER_TOOLS } from '../../core/state/coderConfig';
 
 /**
  * 云效接入配置：show / set-token / set-org / set-endpoint / set-project / set-coder。

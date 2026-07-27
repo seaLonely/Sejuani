@@ -1,13 +1,14 @@
 import inquirer from 'inquirer';
 import path from 'path';
-import { Component } from '../types';
-import { SejuaniConfig } from '../config';
+import { Component } from '../core/types';
+import { SejuaniConfig } from '../core/config';
 import { chalk, logger } from '../utils/logger';
-import { resolveScanTarget } from '../core/configLoader';
+import { inquirerConfirm, inquirerInput } from './prompt';
+import { resolveScanTarget } from '../core/config';
 import { discoverComponents } from '../core/discover';
 import { discoverAndSelect } from './select';
 import { catalogFromComponents } from '../core/catalog';
-import { aiConfigured } from '../core/aiConfig';
+import { aiConfigured } from '../core/state/aiConfig';
 import { planWorkflow, genWorkflowId } from '../core/workflow/planner';
 import { runWorkflow } from '../core/workflow/engine';
 import { startRunLog, endRunLog } from '../utils/fileLogger';
@@ -146,6 +147,6 @@ export async function runAiFlow(config: SejuaniConfig, opts: AiFlowOptions = {})
   }
 
   // 审阅 + 确认后执行（正式执行由 engine 复用同一运行日志并负责 endRunLog）
-  await runWorkflow(spec, ctx, { dryRun: false, yes: !!opts.yes, resume: false });
+  await runWorkflow(spec, ctx, { dryRun: false, yes: !!opts.yes, resume: false, confirm: inquirerConfirm, promptInput: inquirerInput });
   return true;
 }

@@ -1,15 +1,12 @@
 #!/usr/bin/env node
 import { logger } from './utils/logger';
-import { expandAlias } from './core/aliasStore';
-import { buildProgram } from './cli/program';
+import { buildProgram, expandArgv } from './cli/program';
 import { registerAll } from './cli/commands';
 
 const program = buildProgram();
 registerAll(program);
 
-// 先展开自定义短链（若首个参数命中且非内置命令），再交给 commander 解析
-const reservedCommands = new Set(program.commands.map((c) => c.name()));
-const expandedArgs = expandAlias(process.argv.slice(2), reservedCommands);
+const expandedArgs = expandArgv(program, process.argv.slice(2));
 program
   .parseAsync([process.argv[0], process.argv[1], ...expandedArgs])
   .then(() => {

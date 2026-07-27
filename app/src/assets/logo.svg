@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- Freljord-inspired frost emblem -->
+  <!-- Outer shield shape -->
+  <path d="M32 4 L56 18 L56 42 L32 60 L8 42 L8 18 Z"
+        stroke="#5ea8e6" stroke-width="2" fill="rgba(94,168,230,0.08)"/>
+  <!-- Inner ice crystal -->
+  <path d="M32 12 L32 52" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M18 24 L46 40" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+  <path d="M46 24 L18 40" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+  <!-- Crystal branches -->
+  <path d="M32 12 L26 18" stroke="#5ea8e6" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M32 12 L38 18" stroke="#5ea8e6" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M32 52 L26 46" stroke="#5ea8e6" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M32 52 L38 46" stroke="#5ea8e6" stroke-width="1.5" stroke-linecap="round"/>
+  <!-- Side frost marks -->
+  <path d="M18 24 L22 20" stroke="#5ea8e6" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M46 24 L42 20" stroke="#5ea8e6" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M18 40 L22 44" stroke="#5ea8e6" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M46 40 L42 44" stroke="#5ea8e6" stroke-width="1.5" stroke-linecap="round"/>
+  <!-- Center diamond -->
+  <path d="M32 28 L36 32 L32 36 L28 32 Z" fill="#ffffff" opacity="0.9"/>
+</svg>

@@ -1,7 +1,7 @@
 import { chalk, logger } from '../../utils/logger';
 import { formatCommand, runCommandStream } from '../exec';
 import { logEvent } from '../../utils/fileLogger';
-import { CoderTool, CODER_TOOLS, getCoderToolSpec } from '../coderConfig';
+import { CoderTool, CODER_TOOLS, getCoderToolSpec } from '../state/coderConfig';
 import { CoderAdapter, CoderContext, CoderResult } from './adapter';
 
 /**

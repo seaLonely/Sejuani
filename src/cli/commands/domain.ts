@@ -1,14 +1,14 @@
 import { Command } from 'commander';
 import { chalk, logger } from '../../utils/logger';
-import { loadConfig } from '../../core/configLoader';
-import { SejuaniConfig } from '../../config';
-import { setActiveDomain } from '../../core/domainState';
+import { loadConfig } from '../../core/config';
+import { SejuaniConfig } from '../../core/config';
+import { setActiveDomain } from '../../core/state/domain';
 import {
   getRegistryOverride,
   setRegistry,
   clearRegistryOverride,
   registryStateFilePath,
-} from '../../core/registryStore';
+} from '../../core/state/registryOverrides';
 
 function printDomains(config: SejuaniConfig): void {
   logger.info(chalk.bold('可用域:'));

@@ -1,5 +1,5 @@
 import { Capability, AgentTool, ToolResult } from '../types';
-import { getCoderConfig, listCoders, setActiveCoder, isCoderTool, CoderTool } from '../../coderConfig';
+import { getCoderConfig, listCoders, setActiveCoder, isCoderTool, CoderTool } from '../../state/coderConfig';
 import { getCoderAdapter, buildFixPrompt } from '../../coder/registry';
 
 /**
@@ -81,6 +81,7 @@ const coderSetTool: AgentTool = {
 
 const coderStatus: AgentTool = {
   name: 'coder_status',
+  readOnly: true,
   description: '展示当前编码工具配置（活跃工具、命令模板等）',
   parameters: { type: 'object', properties: {} },
   async execute(): Promise<ToolResult> {

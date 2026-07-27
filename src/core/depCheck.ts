@@ -1,7 +1,7 @@
 import http from 'http';
 import https from 'https';
 import { URL } from 'url';
-import { Component } from '../types';
+import { Component } from './types';
 import { readYarnLock } from './lockParser';
 import { chalk, logger } from '../utils/logger';
 import { createProgress } from '../utils/progress';

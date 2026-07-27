@@ -1,4 +1,5 @@
-import { SejuaniConfig } from '../../config';
+import { SejuaniConfig } from '../config';
+import { PromptInputFn } from '../types';
 import { ChatMessage } from '../aiClient';
 
 /**
@@ -16,6 +17,8 @@ export interface AgentTool {
   parameters: Record<string, any>;
   /** 是否需要用户确认后才执行（危险/不可逆操作） */
   needsConfirm?: boolean;
+  /** 只读工具（查询类）：同批 tool_calls 中可并行执行 */
+  readOnly?: boolean;
   /** 执行工具 */
   execute(args: Record<string, any>, ctx: AgentContext): Promise<ToolResult>;
 }
@@ -30,6 +33,9 @@ export interface ToolResult {
   data?: any;
 }
 
+/** 三态确认应答：always = 本会话内后续同名工具不再询问 */
+export type ConfirmAnswer = 'yes' | 'no' | 'always';
+
 /** Agent 运行上下文（跨轮次共享） */
 export interface AgentContext {
   /** 当前域标识 */
@@ -38,10 +44,16 @@ export interface AgentContext {
   domainLabel: string;
   /** 已加载的配置 */
   config: SejuaniConfig;
-  /** 会话历史（自动裁剪） */
+  /** 会话历史（自动裁剪/压缩） */
   history: ChatMessage[];
   /** 确认回调（危险操作前调用） */
   confirm(message: string): Promise<boolean>;
+  /** 三态确认回调（支持「总是允许」）；未注入时回落 confirm */
+  confirmEx?: (message: string) => Promise<ConfirmAnswer>;
+  /** 会话内已授权免确认的工具名集合（仅内存，不持久化） */
+  grantedTools: Set<string>;
+  /** 输入回调：工作流 needsInput 补全用；REPL 注 inquirerInput，serve 注 SSE 输入桥 */
+  promptInput?: PromptInputFn;
   /** 输出到终端（非 LLM 的直接输出） */
   print(text: string): void;
 }

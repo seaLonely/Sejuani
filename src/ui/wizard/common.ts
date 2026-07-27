@@ -1,7 +1,7 @@
 import inquirer from 'inquirer';
-import { Component } from '../../types';
+import { Component } from '../../core/types';
 import { chalk, logger } from '../../utils/logger';
-import { SejuaniConfig } from '../../config';
+import { SejuaniConfig } from '../../core/config';
 import { promptRoot, discoverAndSelect, ScanTarget } from '../select';
 import { discoverComponents } from '../../core/discover';
 

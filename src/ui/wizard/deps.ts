@@ -2,12 +2,12 @@ import inquirer from 'inquirer';
 import fs from 'fs';
 import path from 'path';
 import { chalk, logger } from '../../utils/logger';
-import { SejuaniConfig } from '../../config';
+import { SejuaniConfig } from '../../core/config';
 import { promptRoot } from '../select';
 import { printRegistries } from '../../core/registries';
 import { checkDependencies } from '../../core/depCheck';
 import { analyzeLayers, printLayers, toLayersJson } from '../../core/depsTree';
-import { saveVirtualSpace, VsMember } from '../../core/vsStore';
+import { saveVirtualSpace, VsMember } from '../../core/state/virtualSpaces';
 import { componentsFromTarget } from './common';
 
 export async function flowRegistries(config: SejuaniConfig): Promise<void> {

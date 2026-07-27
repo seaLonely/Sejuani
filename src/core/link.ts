@@ -1,7 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import inquirer from 'inquirer';
-import { Component } from '../types';
+import { Component, ConfirmFn } from './types';
 import { chalk, logger } from '../utils/logger';
 
 export interface LinkPlanItem {
@@ -20,6 +19,8 @@ export interface LinkOptions {
   force: boolean;
   dryRun: boolean;
   yes: boolean;
+  /** 确认回调（yes=false 时生效）；未提供时视为拒绝 */
+  confirm?: ConfirmFn;
 }
 
 function isSymlink(p: string): boolean {
@@ -84,9 +85,7 @@ export async function createVirtualSpace(
   }
 
   if (!opts.yes) {
-    const { confirmed } = await inquirer.prompt<{ confirmed: boolean }>([
-      { type: 'confirm', name: 'confirmed', message: `确认创建 ${actionable.length} 个软链?`, default: false },
-    ]);
+    const confirmed = opts.confirm ? await opts.confirm(`确认创建 ${actionable.length} 个软链?`) : false;
     if (!confirmed) {
       logger.warn('已取消。');
       return;

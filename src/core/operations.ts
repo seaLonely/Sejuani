@@ -1,4 +1,4 @@
-import { Component, ComponentChange, FileChange } from '../types';
+import { Component, ComponentChange, FileChange } from './types';
 import { editName, editVersion, editDependencies } from './packageJson';
 import { editYarnLockUrl } from './yarnLock';
 import { BumpType } from './version';

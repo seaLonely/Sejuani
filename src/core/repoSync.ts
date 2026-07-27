@@ -1,8 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import inquirer from 'inquirer';
-import { Component } from '../types';
+import { Component, ConfirmFn } from './types';
 import { runCommand, runCommandStream, formatCommand } from './exec';
 import { chalk, logger } from '../utils/logger';
 
@@ -13,6 +12,8 @@ export interface SyncOptions {
   workDir?: string;
   dryRun: boolean;
   yes: boolean;
+  /** 确认回调（yes=false 时生效）；未提供时视为拒绝 */
+  confirm?: ConfirmFn;
   /**
    * 完整发布：pack/publish 之前在每个组件自己的目录依次执行的构建步骤
    * （如 yarn install / yarn lib / gaia pub-isd prod）。为空则仅镜像(pack+publish)。
@@ -127,14 +128,8 @@ export async function syncComponents(
   }
 
   if (!opts.yes) {
-    const { confirmed } = await inquirer.prompt<{ confirmed: boolean }>([
-      {
-        type: 'confirm',
-        name: 'confirmed',
-        message: `确认对 ${targets.length} 个组件执行 ${full ? '构建+pack+publish' : 'pack+publish'}?`,
-        default: false,
-      },
-    ]);
+    const message = `确认对 ${targets.length} 个组件执行 ${full ? '构建+pack+publish' : 'pack+publish'}?`;
+    const confirmed = opts.confirm ? await opts.confirm(message) : false;
     if (!confirmed) {
       logger.warn('已取消。');
       return;

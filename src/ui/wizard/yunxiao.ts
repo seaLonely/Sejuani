@@ -10,8 +10,8 @@ import {
 import { runFixFlow } from '../yunxiaoFlow';
 import * as yunxiao from '../../core/yunxiao/api';
 import { ListQuery, WorkItem } from '../../core/yunxiao/types';
-import { getYunxiaoConfig, setYunxiaoConfig } from '../../core/yunxiaoConfig';
-import { CODER_TOOLS, CoderTool, getCoderConfig } from '../../core/coderConfig';
+import { getYunxiaoConfig, setYunxiaoConfig } from '../../core/state/yunxiaoConfig';
+import { CODER_TOOLS, CoderTool, getCoderConfig } from '../../core/state/coderConfig';
 
 // ─── 首次引导 ─────────────────────────────────────────────────────
 

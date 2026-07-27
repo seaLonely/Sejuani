@@ -2,13 +2,13 @@ import fs from 'fs';
 import path from 'path';
 import { Command } from 'commander';
 import { chalk, logger } from '../../utils/logger';
-import { loadConfig } from '../../core/configLoader';
+import { loadConfig } from '../../core/config';
 import { discoverComponents } from '../../core/discover';
-import { Component } from '../../types';
+import { Component } from '../../core/types';
 import { printRegistries } from '../../core/registries';
 import { checkDependencies } from '../../core/depCheck';
 import { analyzeLayers, printLayers, toLayersJson } from '../../core/depsTree';
-import { saveVirtualSpace, VsMember } from '../../core/vsStore';
+import { saveVirtualSpace, VsMember } from '../../core/state/virtualSpaces';
 import { componentsTarget, resolveComponents } from '../context';
 
 /** 依赖治理类命令（只读/分析）：registries / check-deps / deps-tree。 */

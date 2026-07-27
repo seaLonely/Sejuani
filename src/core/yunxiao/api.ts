@@ -1,5 +1,5 @@
 import { request, organizationId } from './client';
-import { getYunxiaoConfig } from '../yunxiaoConfig';
+import { getYunxiaoConfig } from '../state/yunxiaoConfig';
 import {
   CreateMergeRequestInput,
   CurrentUser,

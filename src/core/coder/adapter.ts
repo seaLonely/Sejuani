@@ -4,7 +4,7 @@
  * 功能2「AI 辅助修复」把 claude / kimi / opencode 等本地 CLI 作为子进程调用：
  * Sejuani 负责拼装「修复上下文提示词」并把控流程，具体改代码由本地工具完成。
  */
-import { CoderTool } from '../coderConfig';
+import { CoderTool } from '../state/coderConfig';
 
 /** 一次修复调用的上下文。 */
 export interface CoderContext {

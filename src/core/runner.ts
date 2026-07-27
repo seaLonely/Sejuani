@@ -1,6 +1,5 @@
-import inquirer from 'inquirer';
 import path from 'path';
-import { ComponentChange } from '../types';
+import { ComponentChange, ConfirmFn } from './types';
 import { backupFile, writeFile } from './backup';
 import { renderDiff } from './diff';
 import { chalk, logger } from '../utils/logger';
@@ -14,6 +13,8 @@ export interface RunOptions {
   yes: boolean;
   /** 预览时展示 diff 明细 */
   showDiff: boolean;
+  /** 确认回调（yes=false 时生效）；未提供时视为拒绝，不会默默写盘 */
+  confirm?: ConfirmFn;
 }
 
 export interface RunResult {
@@ -27,6 +28,20 @@ export function keepChanged(changes: ComponentChange[]): ComponentChange[] {
   return changes
     .map((c) => ({ component: c.component, files: c.files.filter((f) => f.after !== f.before) }))
     .filter((c) => c.files.length > 0);
+}
+
+/** 把变更列表写入磁盘（可选备份）：无交互的纯执行层，供 runChanges 与 server 路由复用。 */
+export function applyChanges(changes: ComponentChange[], backup: boolean): RunResult {
+  const backups: string[] = [];
+  let filesChanged = 0;
+  for (const c of changes) {
+    for (const f of c.files) {
+      if (backup) backups.push(backupFile(f.filePath));
+      writeFile(f.filePath, f.after);
+      filesChanged += 1;
+    }
+  }
+  return { filesChanged, componentsChanged: changes.length, backups };
 }
 
 function printPreview(changes: ComponentChange[], showDiff: boolean): { files: number } {
@@ -73,32 +88,18 @@ export async function runChanges(
   }
 
   if (!opts.yes) {
-    const { confirmed } = await inquirer.prompt<{ confirmed: boolean }>([
-      {
-        type: 'confirm',
-        name: 'confirmed',
-        message: `确认写入以上 ${files} 个文件${opts.backup ? '（将生成 .bak 备份）' : ''}?`,
-        default: false,
-      },
-    ]);
+    const message = `确认写入以上 ${files} 个文件${opts.backup ? '（将生成 .bak 备份）' : ''}?`;
+    const confirmed = opts.confirm ? await opts.confirm(message) : false;
     if (!confirmed) {
       logger.warn('已取消，未做任何修改。');
       return { filesChanged: 0, componentsChanged: 0, backups: [] };
     }
   }
 
-  const backups: string[] = [];
-  let filesChanged = 0;
-  for (const c of changes) {
-    for (const f of c.files) {
-      if (opts.backup) backups.push(backupFile(f.filePath));
-      writeFile(f.filePath, f.after);
-      filesChanged += 1;
-    }
-  }
+  const result = applyChanges(changes, opts.backup);
 
   logger.success(
-    `完成: 修改 ${filesChanged} 个文件${opts.backup ? `, 生成 ${backups.length} 个备份` : ''}。`
+    `完成: 修改 ${result.filesChanged} 个文件${opts.backup ? `, 生成 ${result.backups.length} 个备份` : ''}。`
   );
-  return { filesChanged, componentsChanged: changes.length, backups };
+  return result;
 }

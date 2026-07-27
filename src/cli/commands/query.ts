@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { Command } from 'commander';
 import { logger } from '../../utils/logger';
-import { loadConfig } from '../../core/configLoader';
+import { loadConfig } from '../../core/config';
 import { discoverComponents } from '../../core/discover';
 import {
   buildCatalog,

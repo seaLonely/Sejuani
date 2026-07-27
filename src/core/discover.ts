@@ -1,7 +1,8 @@
 import fg from 'fast-glob';
 import fs from 'fs';
 import path from 'path';
-import { Component } from '../types';
+import { Component } from './types';
+import { SejuaniConfig, resolveScanTarget } from './config';
 
 export interface DiscoverOptions {
   /** 是否要求组件必须包含 yarn.lock（默认 false） */
@@ -61,6 +62,19 @@ export async function discoverComponents(
   }
 
   return components;
+}
+
+/**
+ * 按配置扫描某一类根（projects/components）下的全部组件：
+ * resolveScanTarget + discoverComponents 的常用组合，供 CLI/server 共用。
+ */
+export function scanComponents(
+  config: SejuaniConfig,
+  kind: 'projects' | 'components',
+  options: DiscoverOptions = {}
+): Promise<Component[]> {
+  const t = resolveScanTarget(config.roots[kind]);
+  return discoverComponents(t.dir, { ...options, maxDepth: t.maxDepth });
 }
 
 /**

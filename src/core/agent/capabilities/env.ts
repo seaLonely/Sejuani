@@ -53,6 +53,7 @@ function detectPackageManager(dir: string): 'yarn' | 'npm' | 'pnpm' | null {
 
 const envCheck: AgentTool = {
   name: 'env_check',
+  readOnly: true,
   description: '检测当前开发环境状态：Node.js 版本、npm/yarn/pnpm 版本、是否满足项目 .nvmrc 要求',
   parameters: {
     type: 'object',
@@ -165,6 +166,7 @@ const envInstallNode: AgentTool = {
 
 const envDetectPm: AgentTool = {
   name: 'env_detect_pm',
+  readOnly: true,
   description: '检测项目使用的包管理器（根据 lock 文件判断）',
   parameters: {
     type: 'object',
@@ -192,6 +194,7 @@ const envInstallDeps: AgentTool = {
       pm: { type: 'string', enum: ['yarn', 'npm', 'pnpm'], description: '包管理器（省略则自动检测）' },
     },
   },
+  needsConfirm: true,
   async execute(args): Promise<ToolResult> {
     const dir = args.projectDir ? String(args.projectDir) : process.cwd();
     const pm = args.pm ? String(args.pm) : (detectPackageManager(dir) ?? 'npm');

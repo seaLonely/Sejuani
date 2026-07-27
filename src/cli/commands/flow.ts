@@ -1,50 +1,13 @@
 import { Command } from 'commander';
 import { chalk, logger } from '../../utils/logger';
-import { loadConfig, resolveScanTarget } from '../../core/configLoader';
-import { SejuaniConfig } from '../../config';
-import { discoverComponents } from '../../core/discover';
-import { catalogFromComponents } from '../../core/catalog';
+import { inquirerConfirm, inquirerInput } from '../../ui/prompt';
+import { loadConfig } from '../../core/config';
+import { SejuaniConfig } from '../../core/config';
 import { listSpecs, loadSpec, workflowsDir } from '../../core/workflow/store';
 import { renderWorkflow, runWorkflow } from '../../core/workflow/engine';
+import { buildStepContext } from '../../core/workflow/context';
 import { listTemplates, loadTemplate, removeTemplate, templatesDir } from '../../core/workflow/templates';
 import { runLogFile, tailRunLog, logsDir } from '../../utils/fileLogger';
-import { StepContext, WorkflowSpec } from '../../core/workflow/types';
-
-/**
- * 重建执行上下文：扫描组件库与工程根，从 spec 各步 params.components 反推选中组件。
- * 供 flow show / run / resume 复用（脱离原始交互会话）。
- */
-async function buildFlowContext(
-  config: SejuaniConfig,
-  spec: WorkflowSpec,
-  dryRun: boolean,
-  yes: boolean
-): Promise<StepContext> {
-  const compT = resolveScanTarget(config.roots.components);
-  const projT = resolveScanTarget(config.roots.projects);
-  const components = await discoverComponents(compT.dir, { maxDepth: compT.maxDepth });
-  const projects = await discoverComponents(projT.dir, { maxDepth: projT.maxDepth });
-  // 从各步 params.components 的并集反推选中组件；缺省用全部组件兜底
-  const names = new Set<string>();
-  for (const step of spec.steps) {
-    const cs = step.params && (step.params as any).components;
-    if (Array.isArray(cs)) for (const n of cs) names.add(String(n));
-  }
-  const selectedComponents =
-    names.size > 0
-      ? components.filter((c) => (c.pkgName && names.has(c.pkgName)) || names.has(c.name))
-      : components;
-  return {
-    config,
-    components,
-    catalog: catalogFromComponents(components),
-    projects,
-    selectedComponents: selectedComponents.length > 0 ? selectedComponents : components,
-    foundProjects: [],
-    dryRun,
-    yes,
-  };
-}
 
 /**
  * 工作流模板管理：list / show <name> / rm <name>。
@@ -166,18 +129,18 @@ async function handleFlow(
 
   switch (act) {
     case 'show': {
-      const ctx = await buildFlowContext(config, spec, true, !!opts.yes);
+      const ctx = await buildStepContext(config, spec, { dryRun: true, yes: !!opts.yes });
       renderWorkflow(spec, ctx);
       return;
     }
     case 'run': {
-      const ctx = await buildFlowContext(config, spec, !!opts.dryRun, !!opts.yes);
-      await runWorkflow(spec, ctx, { dryRun: !!opts.dryRun, yes: !!opts.yes, resume: false });
+      const ctx = await buildStepContext(config, spec, { dryRun: !!opts.dryRun, yes: !!opts.yes });
+      await runWorkflow(spec, ctx, { dryRun: !!opts.dryRun, yes: !!opts.yes, resume: false, confirm: inquirerConfirm, promptInput: inquirerInput });
       return;
     }
     case 'resume': {
-      const ctx = await buildFlowContext(config, spec, false, !!opts.yes);
-      await runWorkflow(spec, ctx, { dryRun: false, yes: !!opts.yes, resume: true });
+      const ctx = await buildStepContext(config, spec, { dryRun: false, yes: !!opts.yes });
+      await runWorkflow(spec, ctx, { dryRun: false, yes: !!opts.yes, resume: true, confirm: inquirerConfirm, promptInput: inquirerInput });
       return;
     }
     default:

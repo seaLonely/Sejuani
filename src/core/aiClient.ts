@@ -1,7 +1,7 @@
 import http from 'http';
 import https from 'https';
 import { URL } from 'url';
-import { getAiConfig } from './aiConfig';
+import { getAiConfig } from './state/aiConfig';
 import { logEvent } from '../utils/fileLogger';
 
 /**
@@ -42,6 +42,21 @@ export interface ChatToolsOptions {
   temperature?: number;
   timeoutMs?: number;
   tools: ToolFunction[];
+  /** 可选中止信号（兼容 AbortSignal）：触发后销毁进行中的请求 */
+  signal?: AbortLike;
+}
+
+/** 轻量中止信号接口（结构兼容 Node 16.14+ 的 AbortSignal） */
+export interface AbortLike {
+  readonly aborted: boolean;
+  addEventListener?(type: 'abort', listener: () => void): void;
+}
+
+/** 一次请求的 token 用量（上游返回 usage 时才有） */
+export interface AiUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
 }
 
 export interface ChatToolsResult {
@@ -49,6 +64,8 @@ export interface ChatToolsResult {
   content?: string;
   /** 需要执行的工具调用 */
   toolCalls?: ToolCall[];
+  /** token 用量（可选） */
+  usage?: AiUsage;
 }
 
 export interface ChatJSONOptions {
@@ -76,7 +93,8 @@ function postJson(
   urlStr: string,
   headers: Record<string, string>,
   payload: string,
-  timeoutMs: number
+  timeoutMs: number,
+  signal?: AbortLike
 ): Promise<HttpJsonResult> {
   return new Promise((resolve, reject) => {
     let url: URL;
@@ -84,6 +102,10 @@ function postJson(
       url = new URL(urlStr);
     } catch {
       reject(new Error(`AI baseURL 非法，无法构造请求地址: ${urlStr}`));
+      return;
+    }
+    if (signal?.aborted) {
+      reject(new Error('已取消'));
       return;
     }
     const isHttps = url.protocol === 'https:';
@@ -107,6 +129,7 @@ function postJson(
         res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
       }
     );
+    signal?.addEventListener?.('abort', () => req.destroy(new Error('已取消')));
     req.on('error', (err) => reject(err));
     req.setTimeout(timeoutMs, () => {
       req.destroy(new Error(`AI 请求超时（${Math.round(timeoutMs / 1000)}s）`));
@@ -114,6 +137,17 @@ function postJson(
     req.write(payload);
     req.end();
   });
+}
+
+/** 从响应体的 usage 字段解析 token 用量；无则返回 undefined */
+function parseUsage(raw: any): AiUsage | undefined {
+  const u = raw?.usage;
+  if (!u || typeof u !== 'object') return undefined;
+  return {
+    promptTokens: Number(u.prompt_tokens ?? 0),
+    completionTokens: Number(u.completion_tokens ?? 0),
+    totalTokens: Number(u.total_tokens ?? (Number(u.prompt_tokens ?? 0) + Number(u.completion_tokens ?? 0))),
+  };
 }
 
 /**
@@ -245,7 +279,8 @@ export async function chatWithTools(
       url,
       { Authorization: `Bearer ${cfg.apiKey}` },
       payload,
-      opts.timeoutMs ?? 120000
+      opts.timeoutMs ?? 120000,
+      opts.signal
     );
   } catch (err) {
     logEvent('error', 'ai.error', { url, reason: (err as Error).message });
@@ -272,6 +307,7 @@ export async function chatWithTools(
 
   const choice = parsed?.choices?.[0];
   if (!choice) throw new Error('AI 响应缺少 choices[0]。');
+  const usage = parseUsage(parsed);
 
   const msg = choice.message;
   const finishReason = choice.finish_reason;
@@ -281,7 +317,7 @@ export async function chatWithTools(
     const rawCalls = Array.isArray(msg?.tool_calls) ? msg.tool_calls : [];
     if (rawCalls.length === 0) {
       // finish_reason 声称 tool_calls 但实际为空，回退为文本响应
-      return { content: msg?.content ?? '' };
+      return { content: msg?.content ?? '', usage };
     }
     const toolCalls: ToolCall[] = rawCalls.map((tc: any) => ({
       id: tc.id ?? '',
@@ -291,12 +327,12 @@ export async function chatWithTools(
         arguments: tc.function?.arguments ?? '{}',
       },
     }));
-    return { toolCalls };
+    return { toolCalls, usage };
   }
 
   // 模型直接回复文本
   const content = msg?.content ?? '';
-  return { content: typeof content === 'string' ? content : JSON.stringify(content) };
+  return { content: typeof content === 'string' ? content : JSON.stringify(content), usage };
 }
 
 /** 序列化 ChatMessage 为 API 格式（处理 tool 角色的特殊字段）。 */
@@ -308,4 +344,211 @@ function serializeMessage(m: ChatMessage): Record<string, any> {
     return { role: 'assistant', content: m.content || null, tool_calls: m.tool_calls };
   }
   return { role: m.role, content: m.content };
+}
+
+/**
+ * 同 chatJSON，但额外返回 token 用量（上游提供 usage 时）。
+ * chatJSON 保持原签名不变，避免改动存量调用方。
+ */
+export async function chatJSONWithUsage(
+  messages: ChatMessage[],
+  opts: ChatJSONOptions = {}
+): Promise<{ data: any; usage?: AiUsage }> {
+  const cfg = getAiConfig();
+  if (!cfg.apiKey) {
+    throw new Error('未配置 AI apiKey。请先执行 `sjn ai config set-key <key>`（或设置环境变量 OPENAI_API_KEY）。');
+  }
+  const payload = JSON.stringify({
+    model: opts.model ?? cfg.model,
+    temperature: opts.temperature ?? cfg.temperature,
+    messages,
+    response_format: { type: 'json_object' },
+  });
+  const url = completionsUrl(cfg.baseURL);
+  const res = await postJson(url, { Authorization: `Bearer ${cfg.apiKey}` }, payload, opts.timeoutMs ?? 60000);
+  if (res.status < 200 || res.status >= 300) {
+    throw new Error(`AI 接口返回 HTTP ${res.status}: ${res.body.slice(0, 500)}`);
+  }
+  const parsed = JSON.parse(res.body);
+  const content = parsed?.choices?.[0]?.message?.content;
+  if (typeof content !== 'string' || !content.trim()) {
+    throw new Error('AI 响应缺少 choices[0].message.content。');
+  }
+  return { data: extractJsonObject(content), usage: parseUsage(parsed) };
+}
+
+// ──── 流式 Function Calling ────
+
+/** 流式过程中按 index 聚合的 tool_call 片段 */
+interface StreamToolCallAcc {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+/**
+ * 流式 Function Calling：stream:true 逐行解析 SSE，delta.content 即时回调 onDelta，
+ * delta.tool_calls 按 index 聚合，[DONE] 后组装返回。
+ * 上游非 2xx 或响应非 SSE 时自动回落 chatWithTools 非流式（全文一次性 onDelta）。
+ */
+export async function chatWithToolsStream(
+  messages: ChatMessage[],
+  opts: ChatToolsOptions,
+  onDelta: (text: string) => void
+): Promise<ChatToolsResult> {
+  const cfg = getAiConfig();
+  if (!cfg.apiKey) {
+    throw new Error('未配置 AI apiKey。请先执行 `sjn ai-config set-key <key>`（或设置环境变量 OPENAI_API_KEY）。');
+  }
+  const tools = opts.tools.map((t) => ({
+    type: 'function' as const,
+    function: { name: t.name, description: t.description, parameters: t.parameters },
+  }));
+  const payload = JSON.stringify({
+    model: opts.model ?? cfg.model,
+    temperature: opts.temperature ?? cfg.temperature,
+    messages: messages.map(serializeMessage),
+    tools,
+    stream: true,
+  });
+  const urlStr = completionsUrl(cfg.baseURL);
+  logEvent('debug', 'ai.streamRequest', { url: urlStr, model: opts.model ?? cfg.model, toolCount: tools.length });
+
+  return new Promise<ChatToolsResult>((resolve, reject) => {
+    let url: URL;
+    try {
+      url = new URL(urlStr);
+    } catch {
+      reject(new Error(`AI baseURL 非法，无法构造请求地址: ${urlStr}`));
+      return;
+    }
+    if (opts.signal?.aborted) {
+      reject(new Error('已取消'));
+      return;
+    }
+    const isHttps = url.protocol === 'https:';
+    const lib = isHttps ? https : http;
+    /** 回落非流式：重新请求一次，全文一次性回调 */
+    const fallback = (): void => {
+      chatWithTools(messages, opts)
+        .then((r) => {
+          if (r.content) onDelta(r.content);
+          resolve(r);
+        })
+        .catch(reject);
+    };
+
+    const req = lib.request(
+      {
+        method: 'POST',
+        hostname: url.hostname,
+        port: url.port || (isHttps ? 443 : 80),
+        path: url.pathname + url.search,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+          Accept: 'text/event-stream',
+          Authorization: `Bearer ${cfg.apiKey}`,
+        },
+      },
+      (res) => {
+        const contentType = String(res.headers['content-type'] ?? '');
+        if ((res.statusCode ?? 0) < 200 || (res.statusCode ?? 0) >= 300 || !contentType.includes('event-stream')) {
+          // 上游不支持流式或出错：消耗掉响应后回落非流式
+          res.resume();
+          logEvent('warn', 'ai.streamFallback', { status: res.statusCode, contentType });
+          fallback();
+          return;
+        }
+        res.setEncoding('utf8');
+        let buffer = '';
+        let content = '';
+        const callAcc = new Map<number, StreamToolCallAcc>();
+        let usage: AiUsage | undefined;
+        let settled = false;
+
+        const finish = (): void => {
+          if (settled) return;
+          settled = true;
+          if (callAcc.size > 0) {
+            const toolCalls: ToolCall[] = [...callAcc.entries()]
+              .sort((a, b) => a[0] - b[0])
+              .map(([, acc]) => ({
+                id: acc.id,
+                type: 'function' as const,
+                function: { name: acc.name, arguments: acc.arguments || '{}' },
+              }));
+            resolve({ toolCalls, usage });
+          } else {
+            resolve({ content, usage });
+          }
+        };
+
+        const handleLine = (line: string): void => {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) return;
+          const data = trimmed.slice(5).trim();
+          if (data === '[DONE]') {
+            finish();
+            return;
+          }
+          let chunk: any;
+          try {
+            chunk = JSON.parse(data);
+          } catch {
+            return; // 非 JSON 行忽略
+          }
+          const u = parseUsage(chunk);
+          if (u) usage = u;
+          const delta = chunk?.choices?.[0]?.delta;
+          if (!delta) return;
+          if (typeof delta.content === 'string' && delta.content) {
+            content += delta.content;
+            try {
+              onDelta(delta.content);
+            } catch {
+              /* 回调异常忽略 */
+            }
+          }
+          if (Array.isArray(delta.tool_calls)) {
+            for (const tc of delta.tool_calls) {
+              const idx = typeof tc.index === 'number' ? tc.index : 0;
+              const acc = callAcc.get(idx) ?? { id: '', name: '', arguments: '' };
+              if (tc.id) acc.id = tc.id;
+              if (tc.function?.name) acc.name = tc.function.name;
+              if (tc.function?.arguments) acc.arguments += tc.function.arguments;
+              callAcc.set(idx, acc);
+            }
+          }
+        };
+
+        res.on('data', (piece: string) => {
+          buffer += piece;
+          let nl = buffer.indexOf('\n');
+          while (nl >= 0) {
+            handleLine(buffer.slice(0, nl));
+            buffer = buffer.slice(nl + 1);
+            nl = buffer.indexOf('\n');
+          }
+        });
+        res.on('end', () => {
+          if (buffer.trim()) handleLine(buffer);
+          finish();
+        });
+        res.on('error', (err) => {
+          if (!settled) {
+            settled = true;
+            reject(new Error(`AI 流式响应中断: ${err.message}`));
+          }
+        });
+      }
+    );
+    opts.signal?.addEventListener?.('abort', () => req.destroy(new Error('已取消')));
+    req.on('error', (err) => reject(new Error(`AI 请求失败: ${err.message}`)));
+    req.setTimeout(opts.timeoutMs ?? 120000, () => {
+      req.destroy(new Error(`AI 请求超时（${Math.round((opts.timeoutMs ?? 120000) / 1000)}s）`));
+    });
+    req.write(payload);
+    req.end();
+  });
 }

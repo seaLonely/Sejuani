@@ -2,6 +2,9 @@
 node_modules/
 dist/
 
+# Tauri 桌面端构建产物
+app/src-tauri/target/
+
 # 备份与临时
 *.bak
 .vtmp/

@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { Component } from '../types';
+import { Component } from './types';
 
 export type DepSection = 'dependencies' | 'devDependencies' | 'peerDependencies';
 

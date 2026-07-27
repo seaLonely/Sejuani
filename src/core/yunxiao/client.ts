@@ -1,7 +1,7 @@
 import http from 'http';
 import https from 'https';
 import { URL } from 'url';
-import { getYunxiaoConfig } from '../yunxiaoConfig';
+import { getYunxiaoConfig } from '../state/yunxiaoConfig';
 import { logEvent } from '../../utils/fileLogger';
 
 /**

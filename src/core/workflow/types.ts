@@ -1,7 +1,7 @@
-import { Component } from '../../types';
-import { SejuaniConfig } from '../../config';
+import { Component } from '../types';
+import { SejuaniConfig } from '../config';
 import { Catalog } from '../catalog';
-import { CoderTool } from '../coderConfig';
+import { CoderTool } from '../state/coderConfig';
 import { WorkflowStatus, WorkItem } from '../yunxiao/types';
 
 /**
@@ -16,10 +16,13 @@ export type StepKind =
   | 'project.find-users'
   | 'project.upgrade'
   | 'project.install'
+  | 'project.verify'
   | 'git.pull'
   | 'git.merge'
   | 'git.mr'
   | 'coder.fix'
+  | 'shell.run'
+  | 'notify.summary'
   | 'yunxiao.comment'
   | 'yunxiao.transition';
 
@@ -38,6 +41,10 @@ export interface WorkflowStep {
   dependsOn?: string[];
   /** 缺失的必填参数名（如 git.merge 缺 from）；审阅时高亮、执行前需补全 */
   needsInput?: string[];
+  /** 步骤级重试策略（覆盖 kind 默认）：失败后按 delayMs 间隔最多重试 max 次 */
+  retry?: { max: number; delayMs?: number };
+  /** 条件跳过：命中则标记 skipped 但不中断后续步骤 */
+  skipIf?: 'no-changes' | 'no-targets';
 }
 
 /** 完整工作流 */
@@ -61,12 +68,17 @@ export interface StepResult {
   reason?: string;
   startedAt?: string;
   endedAt?: string;
+  /** 步骤产物（进 checkpoint，resume 时回放到 StepContext） */
+  outputs?: Record<string, unknown>;
 }
 
 /** 一次工作流运行的状态（checkpoint 落盘用） */
 export interface RunState {
   specId: string;
   results: StepResult[];
+  /** 运行开始/结束时间（ISO），用于耗时统计 */
+  startedAt?: string;
+  endedAt?: string;
 }
 
 /**
@@ -90,6 +102,8 @@ export interface StepContext {
   dryRun: boolean;
   /** 是否跳过危险步骤的二次确认 */
   yes: boolean;
+  /** 各步骤产物（stepId -> outputs）；引擎每步后写入，notify.summary 等汇总步骤消费；resume 时由 hydrateContext 回放 */
+  runOutputs?: Record<string, Record<string, unknown>>;
   /** 云效修复流（fix-bug）专用的运行时数据；非该流程为 undefined */
   yunxiao?: YunxiaoStepData;
 }

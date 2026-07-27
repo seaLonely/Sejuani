@@ -1,15 +1,14 @@
 import inquirer from 'inquirer';
 import path from 'path';
 import { discoverComponents } from '../core/discover';
-import { Component } from '../types';
+import { Component } from '../core/types';
 import { chalk, logger } from '../utils/logger';
-import { SejuaniConfig } from '../config';
-import { resolveScanTarget } from '../core/configLoader';
-import { getVirtualSpaces, resolveVsComponents } from '../core/vsStore';
+import { SejuaniConfig } from '../core/config';
+import { resolveScanTarget, ScanTarget as CoreScanTarget } from '../core/config';
+import { getVirtualSpaces, resolveVsComponents } from '../core/state/virtualSpaces';
 
-export interface ScanTarget {
-  dir: string;
-  maxDepth?: number;
+/** 交互选择的扫描目标：在 core 的 ScanTarget 上附加展示与预解析字段 */
+export interface ScanTarget extends CoreScanTarget {
   /** 若已预解析（如虚拟空间），直接使用这些组件，跳过磁盘扫描 */
   components?: Component[];
   /** 展示用标签 */

@@ -77,6 +77,9 @@ function buildUserPrompt(userDescription: string, ctx: StepContext, impact: Impa
 /** 各 kind 的必填参数；缺失时写入 needsInput 交由用户审阅时补全。 */
 const REQUIRED_PARAMS: Partial<Record<StepKind, string[]>> = {
   'git.merge': ['from'],
+  'yunxiao.transition': ['toStatusName'],
+  'yunxiao.comment': ['content'],
+  'shell.run': ['command'],
 };
 
 /** 计算一个步骤缺失的必填参数名。 */
@@ -146,7 +149,10 @@ export function normalizeSpec(raw: any, ctx: StepContext, id?: string): Workflow
   };
 }
 
-/** 调 AI 生成工作流 spec。 */
+/** 校验失败时回喂 LLM 自修复的最大重试次数 */
+const MAX_PLAN_RETRIES = 2;
+
+/** 调 AI 生成工作流 spec；校验失败时把错误清单回喂 LLM 重试（最多 MAX_PLAN_RETRIES 次）。 */
 export async function planWorkflow(
   userDescription: string,
   ctx: StepContext,
@@ -164,9 +170,25 @@ export async function planWorkflow(
     affectedProjects: impact.affectedProjects.map((p) => p.pkgName ?? p.name),
     dependentComponents: impact.dependentComponents,
   });
-  const raw = await chatJSON(messages);
-  const spec = normalizeSpec(raw, ctx, id);
-  logEvent('info', 'plan.result', { specId: spec.id, title: spec.title, steps: spec.steps });
-  logger.success(`AI 规划完成：${chalk.bold(spec.title)}（${spec.steps.length} 步）`);
-  return spec;
+  for (let attempt = 0; ; attempt++) {
+    const raw = await chatJSON(messages);
+    try {
+      const spec = normalizeSpec(raw, ctx, id);
+      logEvent('info', 'plan.result', { specId: spec.id, title: spec.title, steps: spec.steps, attempt });
+      logger.success(`AI 规划完成：${chalk.bold(spec.title)}（${spec.steps.length} 步）`);
+      return spec;
+    } catch (err) {
+      if (attempt >= MAX_PLAN_RETRIES) throw err;
+      const message = (err as Error).message;
+      logEvent('warn', 'plan.retry', { attempt: attempt + 1, error: message });
+      logger.warn(`AI 规划未通过校验，回喂错误重试（${attempt + 1}/${MAX_PLAN_RETRIES}）…`);
+      messages.push(
+        { role: 'assistant', content: JSON.stringify(raw) },
+        {
+          role: 'user',
+          content: `你返回的工作流未通过校验：${message}\n请修正后重新返回完整 JSON（仅 JSON，结构与规则不变，禁止任何解释性文字）。`,
+        }
+      );
+    }
+  }
 }

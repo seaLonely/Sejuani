@@ -1,7 +1,7 @@
 import path from 'path';
 import { Command } from 'commander';
 import { chalk, logger } from '../../utils/logger';
-import { loadConfig, resolveScanTarget } from '../../core/configLoader';
+import { loadConfig, resolveScanTarget } from '../../core/config';
 import { discoverComponents, readSingleComponent } from '../../core/discover';
 import {
   buildNameChanges,
@@ -13,27 +13,24 @@ import { runChanges } from '../../core/runner';
 import { createVirtualSpace } from '../../core/link';
 import { syncComponents } from '../../core/repoSync';
 import { buildCatalog } from '../../core/catalog';
-import { patchVirtualSpace } from '../../core/vsStore';
+import { patchVirtualSpace } from '../../core/state/virtualSpaces';
 import { BumpType } from '../../core/version';
 import { componentsTarget, projectsTarget, resolveComponents } from '../context';
+import { withScanOptions, withWriteSafetyOptions } from '../options';
+import { inquirerConfirm } from '../../ui/prompt';
 
 /** 批量编辑与发布类命令：replace-url / set-version / set-name / link / sync / release / upgrade。 */
 export function register(program: Command): void {
   // 替换 yarn.lock 中的 resolved URL
-  program
-    .command('replace-url')
-    .description('批量替换 yarn.lock 中 resolved 的 URL 片段')
-    .option('-c, --config <file>', '指定 sejuani.config.json')
-    .option('-d, --dir <dir>', '扫描目录（覆盖配置）')
-    .option('--projects <dir>', '工程根目录（覆盖配置）')
-    .option('--components <dir>', '组件库根目录（覆盖配置）')
-    .requiredOption('-f, --from <from>', '要替换的 URL 片段')
-    .requiredOption('-t, --to <to>', '替换为的 URL 片段')
-    .option('--vs <name>', '使用命名虚拟空间作为目标（替代域组件仓）')
-    .option('--dry-run', '仅预览不写入', false)
-    .option('--no-backup', '不生成 .bak 备份')
-    .option('-y, --yes', '跳过确认', false)
-    .option('--diff', '显示 diff 明细', false)
+  withWriteSafetyOptions(
+    withScanOptions(
+      program
+        .command('replace-url')
+        .description('批量替换 yarn.lock 中 resolved 的 URL 片段')
+    )
+      .requiredOption('-f, --from <from>', '要替换的 URL 片段')
+      .requiredOption('-t, --to <to>', '替换为的 URL 片段')
+  )
     .action(async (opts) => {
       const config = loadConfig(opts.config);
       const comps = await resolveComponents(config, opts, 'components', { requireYarnLock: true });
@@ -43,25 +40,21 @@ export function register(program: Command): void {
         backup: opts.backup,
         yes: opts.yes,
         showDiff: opts.diff,
+        confirm: inquirerConfirm,
       });
     });
 
   // 修改 package.json version
-  program
-    .command('set-version')
-    .description('批量修改 package.json 的 version（bump 或指定值，保留 -后缀）')
-    .option('-c, --config <file>', '指定 sejuani.config.json')
-    .option('-d, --dir <dir>', '扫描目录（覆盖配置）')
-    .option('--projects <dir>', '工程根目录（覆盖配置）')
-    .option('--components <dir>', '组件库根目录（覆盖配置）')
-    .option('-b, --bump <level>', '递增级别: patch|minor|major')
-    .option('-t, --to <version>', '设为指定版本，如 1.2.0 或 1.2.0-chery')
-    .option('--keep-suffix', 'set 模式下若未写后缀则沿用当前后缀', false)
-    .option('--vs <name>', '使用命名虚拟空间作为目标（替代域组件仓）')
-    .option('--dry-run', '仅预览不写入', false)
-    .option('--no-backup', '不生成 .bak 备份')
-    .option('-y, --yes', '跳过确认', false)
-    .option('--diff', '显示 diff 明细', false)
+  withWriteSafetyOptions(
+    withScanOptions(
+      program
+        .command('set-version')
+        .description('批量修改 package.json 的 version（bump 或指定值，保留 -后缀）')
+    )
+      .option('-b, --bump <level>', '递增级别: patch|minor|major')
+      .option('-t, --to <version>', '设为指定版本，如 1.2.0 或 1.2.0-chery')
+      .option('--keep-suffix', 'set 模式下若未写后缀则沿用当前后缀', false)
+  )
     .action(async (opts) => {
       if (!opts.bump && !opts.to) {
         logger.error('请提供 --bump <level> 或 --to <version> 之一。');
@@ -78,25 +71,21 @@ export function register(program: Command): void {
         backup: opts.backup,
         yes: opts.yes,
         showDiff: opts.diff,
+        confirm: inquirerConfirm,
       });
     });
 
   // 修改 package.json name
-  program
-    .command('set-name')
-    .description('批量修改 package.json 的 name（查找替换或设为固定值）')
-    .option('-c, --config <file>', '指定 sejuani.config.json')
-    .option('-d, --dir <dir>', '扫描目录（覆盖配置）')
-    .option('--projects <dir>', '工程根目录（覆盖配置）')
-    .option('--components <dir>', '组件库根目录（覆盖配置）')
-    .option('--find <find>', '要查找的子串')
-    .option('--replace <replace>', '替换为', '')
-    .option('-t, --to <name>', '整体设为固定 name')
-    .option('--vs <name>', '使用命名虚拟空间作为目标（替代域组件仓）')
-    .option('--dry-run', '仅预览不写入', false)
-    .option('--no-backup', '不生成 .bak 备份')
-    .option('-y, --yes', '跳过确认', false)
-    .option('--diff', '显示 diff 明细', false)
+  withWriteSafetyOptions(
+    withScanOptions(
+      program
+        .command('set-name')
+        .description('批量修改 package.json 的 name（查找替换或设为固定值）')
+    )
+      .option('--find <find>', '要查找的子串')
+      .option('--replace <replace>', '替换为', '')
+      .option('-t, --to <name>', '整体设为固定 name')
+  )
     .action(async (opts) => {
       if (!opts.find && !opts.to) {
         logger.error('请提供 --find <str> 或 --to <name> 之一。');
@@ -113,6 +102,7 @@ export function register(program: Command): void {
         backup: opts.backup,
         yes: opts.yes,
         showDiff: opts.diff,
+        confirm: inquirerConfirm,
       });
     });
 
@@ -137,6 +127,7 @@ export function register(program: Command): void {
         force: opts.force,
         dryRun: opts.dryRun,
         yes: opts.yes,
+        confirm: inquirerConfirm,
       });
       if (opts.vs && !opts.dryRun) patchVirtualSpace(opts.vs, { linkedDir: path.resolve(opts.into) });
     });
@@ -171,6 +162,7 @@ export function register(program: Command): void {
         workDir: opts.workDir,
         dryRun: opts.dryRun,
         yes: opts.yes,
+        confirm: inquirerConfirm,
         packRetries: opts.packRetries,
         packRetryDelayMs: opts.packWait != null ? opts.packWait * 1000 : undefined,
       });
@@ -226,6 +218,7 @@ export function register(program: Command): void {
         workDir: opts.workDir,
         dryRun: opts.dryRun,
         yes: opts.yes,
+        confirm: inquirerConfirm,
         buildSteps,
         packRetries: opts.packRetries,
         packRetryDelayMs: opts.packWait != null ? opts.packWait * 1000 : undefined,
@@ -265,6 +258,7 @@ export function register(program: Command): void {
         backup: opts.backup,
         yes: opts.yes,
         showDiff: opts.diff,
+        confirm: inquirerConfirm,
       });
       if (!opts.dryRun) {
         logger.warn('升级仅改写 package.json，未改动 yarn.lock；请在各工程重新执行 yarn install。');

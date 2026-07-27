@@ -1,11 +1,10 @@
 import path from 'path';
-import { Component } from '../types';
+import { Component } from '../core/types';
 import { chalk, logger } from '../utils/logger';
-import { SejuaniConfig } from '../config';
-import { resolveScanTarget } from '../core/configLoader';
+import { SejuaniConfig } from '../core/config';
+import { resolveScanTarget, ScanTarget } from '../core/config';
 import { discoverComponents } from '../core/discover';
-import { resolveVsComponents } from '../core/vsStore';
-import { ScanTarget } from '../ui/select';
+import { resolveVsComponents } from '../core/state/virtualSpaces';
 
 /**
  * 依据 CLI 选项与配置解析出一个扫描目标。
@@ -61,15 +60,4 @@ export async function resolveComponents(
     requireYarnLock: discoverOpts.requireYarnLock,
     maxDepth: target.maxDepth,
   });
-}
-
-// 从 package.json 动态读取版本，避免硬编码与实际发布版本不一致
-export function readPkgVersion(): string {
-  try {
-    // dist/index.js 与 src/index.ts 均位于包根的一级子目录，package.json 在上层
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    return require('../../package.json').version ?? '0.0.0';
-  } catch {
-    return '0.0.0';
-  }
 }

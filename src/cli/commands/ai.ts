@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import { chalk, logger } from '../../utils/logger';
-import { loadConfig } from '../../core/configLoader';
-import { getAiConfig, setAiConfig, maskApiKey, aiStateFilePath } from '../../core/aiConfig';
+import { loadConfig } from '../../core/config';
+import { getAiConfig, setAiConfig, maskApiKey, aiStateFilePath } from '../../core/state/aiConfig';
 import { runAiFlow } from '../../ui/aiFlow';
 
 /**

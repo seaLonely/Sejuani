@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import { chalk, logger } from '../../utils/logger';
-import { getAliases, setAlias, removeAlias, aliasStateFilePath } from '../../core/aliasStore';
+import { getAliases, setAlias, removeAlias, aliasStateFilePath } from '../../core/state/aliases';
 
 function printAliases(): void {
   const aliases = getAliases();

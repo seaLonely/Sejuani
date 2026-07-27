@@ -1,6 +1,6 @@
 import inquirer from 'inquirer';
 import { chalk } from '../../utils/logger';
-import { SejuaniConfig } from '../../config';
+import { SejuaniConfig } from '../../core/config';
 import { runAiFlow } from '../aiFlow';
 import { listTemplates } from '../../core/workflow/templates';
 

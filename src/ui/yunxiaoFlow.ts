@@ -1,11 +1,13 @@
 import path from 'path';
 import { chalk, logger } from '../utils/logger';
-import { loadConfig } from '../core/configLoader';
-import { SejuaniConfig } from '../config';
+import { inquirerConfirm, inquirerInput } from './prompt';
+import { loadConfig } from '../core/config';
+import { SejuaniConfig } from '../core/config';
 import { catalogFromComponents } from '../core/catalog';
-import { yunxiaoConfigured } from '../core/yunxiaoConfig';
-import { CoderTool, getCoderConfig } from '../core/coderConfig';
+import { yunxiaoConfigured } from '../core/state/yunxiaoConfig';
+import { CoderTool, getCoderConfig } from '../core/state/coderConfig';
 import * as yunxiao from '../core/yunxiao/api';
+import { transitionWorkItem } from '../core/yunxiao/transitions';
 import { ListQuery, WorkItem, WorkItemComment, WorkItemType } from '../core/yunxiao/types';
 import * as git from '../core/git';
 import { genWorkflowId } from '../core/workflow/planner';
@@ -138,34 +140,30 @@ export function printBoard(
 }
 
 /**
- * 快速流转工单状态（供 CLI `task do/done` 用）。
- * 成功返回 true，失败打 error 并返回 false。
+ * 快速流转工单状态（供 CLI `task do/done` 用）：核心逻辑在 core/yunxiao/transitions，
+ * 这里只负责把结果翻译成终端输出。成功返回 true，失败打 error 并返回 false。
  */
 export async function quickTransition(issueId: string, targetStatusName: string): Promise<boolean> {
-  if (!ensureYunxiaoConfigured()) return false;
-  try {
-    const issue = await yunxiao.getWorkItem(issueId);
-    const statuses = await yunxiao.listWorkflowStatuses(issue.spaceId, issue.type);
-    const targetId = yunxiao.findStatusIdByName(statuses, targetStatusName);
-    if (!targetId) {
-      logger.error(`目标状态「${targetStatusName}」不在该工单的工作流中：${statuses.map((s) => s.name).join('/') || '(空)'}`);
+  const res = await transitionWorkItem(issueId, targetStatusName);
+  switch (res.status) {
+    case 'not-configured':
+      ensureYunxiaoConfigured(); // 打印统一的未配置提示
       return false;
-    }
-    if (targetId === issue.statusId) {
-      logger.info(`工单 ${chalk.cyan(issue.identifier)} 已处于「${targetStatusName}」，无需流转。`);
+    case 'no-such-status':
+      logger.error(`目标状态「${res.target}」不在该工单的工作流中：${res.available.join('/') || '(空)'}`);
+      return false;
+    case 'already':
+      logger.info(`工单 ${chalk.cyan(res.identifier)} 已处于「${res.target}」，无需流转。`);
       return true;
-    }
-    const chk = await yunxiao.canTransition(issue.spaceId, issue.type, issue.statusId, targetId);
-    if (!chk.ok) {
-      logger.error(`流转不合法：${issue.statusName} ✗→ ${targetStatusName}`);
+    case 'illegal':
+      logger.error(`流转不合法：${res.from} ✗→ ${res.target}`);
       return false;
-    }
-    await yunxiao.updateWorkItemStatus(issue.id, targetId);
-    logger.success(`${chalk.cyan(issue.identifier)} ${issue.statusName} → ${targetStatusName}`);
-    return true;
-  } catch (err) {
-    logger.error((err as Error).message);
-    return false;
+    case 'done':
+      logger.success(`${chalk.cyan(res.identifier)} ${res.from} → ${res.target}`);
+      return true;
+    case 'error':
+      logger.error(res.message);
+      return false;
   }
 }
 
@@ -262,5 +260,5 @@ export async function runFixFlow(opts: FixFlowOptions): Promise<boolean> {
     return true;
   }
 
-  return runWorkflow(spec, ctx, { dryRun: false, yes: !!opts.yes, resume: false });
+  return runWorkflow(spec, ctx, { dryRun: false, yes: !!opts.yes, resume: false, confirm: inquirerConfirm, promptInput: inquirerInput });
 }

@@ -1,5 +1,5 @@
 import path from 'path';
-import { Component } from '../types';
+import { Component } from './types';
 import { readProjectDeps } from './projectDeps';
 import { chalk, logger } from '../utils/logger';
 

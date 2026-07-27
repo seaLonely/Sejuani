@@ -1,8 +1,8 @@
 import inquirer from 'inquirer';
 import path from 'path';
-import { Component } from '../../types';
+import { Component } from '../../core/types';
 import { chalk, logger } from '../../utils/logger';
-import { SejuaniConfig } from '../../config';
+import { SejuaniConfig } from '../../core/config';
 import { promptRoot, discoverAndSelect } from '../select';
 import { readSingleComponent, discoverComponents } from '../../core/discover';
 import {
@@ -16,8 +16,9 @@ import { createVirtualSpace } from '../../core/link';
 import { syncComponents } from '../../core/repoSync';
 import { buildCatalog } from '../../core/catalog';
 import { BumpType } from '../../core/version';
-import { resolveScanTarget } from '../../core/configLoader';
+import { resolveScanTarget } from '../../core/config';
 import { askDryAndBackup, pickComponents } from './common';
+import { inquirerConfirm } from '../prompt';
 
 export async function flowReplaceUrl(config: SejuaniConfig): Promise<void> {
   const comps = (await pickComponents(config, true)).filter((c) => c.yarnLockPath);
@@ -32,6 +33,7 @@ export async function flowReplaceUrl(config: SejuaniConfig): Promise<void> {
     backup,
     yes: false,
     showDiff: true,
+    confirm: inquirerConfirm,
   });
 }
 
@@ -64,7 +66,7 @@ export async function flowSetVersion(config: SejuaniConfig): Promise<void> {
     changes = buildVersionChanges(comps, { mode: 'set', target: target.trim(), keepSuffix });
   }
   const { dryRun, backup } = await askDryAndBackup();
-  await runChanges(changes, { dryRun, backup, yes: false, showDiff: true });
+  await runChanges(changes, { dryRun, backup, yes: false, showDiff: true, confirm: inquirerConfirm });
 }
 
 export async function flowSetName(config: SejuaniConfig): Promise<void> {
@@ -95,7 +97,7 @@ export async function flowSetName(config: SejuaniConfig): Promise<void> {
     changes = buildNameChanges(comps, { target: target.trim() });
   }
   const { dryRun, backup } = await askDryAndBackup();
-  await runChanges(changes, { dryRun, backup, yes: false, showDiff: true });
+  await runChanges(changes, { dryRun, backup, yes: false, showDiff: true, confirm: inquirerConfirm });
 }
 
 export async function flowLink(config: SejuaniConfig): Promise<void> {
@@ -114,7 +116,7 @@ export async function flowLink(config: SejuaniConfig): Promise<void> {
     { type: 'confirm', name: 'force', message: '若已存在同名软链则覆盖?', default: false },
     { type: 'confirm', name: 'dryRun', message: '先干跑预览(不创建)?', default: true },
   ]);
-  await createVirtualSpace(comps, { into, force, dryRun, yes: false });
+  await createVirtualSpace(comps, { into, force, dryRun, yes: false, confirm: inquirerConfirm });
 }
 
 export async function flowSync(config: SejuaniConfig): Promise<void> {
@@ -136,6 +138,7 @@ export async function flowSync(config: SejuaniConfig): Promise<void> {
     publishRegistry: publishRegistry.trim(),
     dryRun,
     yes: false,
+    confirm: inquirerConfirm,
   });
 }
 
@@ -198,6 +201,7 @@ export async function flowRelease(config: SejuaniConfig): Promise<void> {
     publishRegistry: publishRegistry.trim(),
     dryRun,
     yes: false,
+    confirm: inquirerConfirm,
     buildSteps,
   });
 }
@@ -255,6 +259,7 @@ export async function flowUpgrade(config: SejuaniConfig): Promise<void> {
     backup,
     yes: false,
     showDiff: true,
+    confirm: inquirerConfirm,
   });
   if (!dryRun) {
     logger.warn('升级仅改写 package.json，未改动 yarn.lock；请在各工程重新执行 yarn install。');

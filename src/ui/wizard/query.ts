@@ -2,8 +2,8 @@ import inquirer from 'inquirer';
 import fs from 'fs';
 import path from 'path';
 import { chalk, logger } from '../../utils/logger';
-import { SejuaniConfig } from '../../config';
-import { resolveScanTarget } from '../../core/configLoader';
+import { SejuaniConfig } from '../../core/config';
+import { resolveScanTarget } from '../../core/config';
 import { discoverComponents } from '../../core/discover';
 import { buildCatalog, catalogToJson, printCatalog } from '../../core/catalog';
 import {

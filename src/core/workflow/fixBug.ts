@@ -59,6 +59,7 @@ export function buildFixBugSpec(issue: WorkItem, opts: FixBugOptions): WorkflowS
       params: { targetBranch: opts.targetBranch },
       dangerous: true,
       dependsOn: ['fix'],
+      skipIf: 'no-changes',
     },
     {
       id: 'note-mr',
@@ -66,6 +67,7 @@ export function buildFixBugSpec(issue: WorkItem, opts: FixBugOptions): WorkflowS
       title: '评论：附上 MR 链接',
       params: { content: '✅ 修复已提交，分支 {branch}，合并请求：{mrUrl}' },
       dependsOn: ['mr'],
+      skipIf: 'no-changes',
     },
     {
       id: 'to-done',
@@ -74,6 +76,7 @@ export function buildFixBugSpec(issue: WorkItem, opts: FixBugOptions): WorkflowS
       params: { toStatusName: doneStatus },
       dangerous: true,
       dependsOn: ['note-mr'],
+      skipIf: 'no-changes',
     },
   ];
 

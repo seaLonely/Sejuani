@@ -1,4 +1,4 @@
-import { Component } from '../types';
+import { Component } from './types';
 import { readYarnLock } from './lockParser';
 import { chalk, logger } from '../utils/logger';
 

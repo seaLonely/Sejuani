@@ -1,7 +1,6 @@
 import { Capability, AgentTool, ToolResult } from '../types';
 import * as yunxiao from '../../yunxiao/api';
-import { getYunxiaoConfig, setYunxiaoConfig } from '../../yunxiaoConfig';
-import { ensureYunxiaoConfigured } from '../../../ui/yunxiaoFlow';
+import { getYunxiaoConfig, setYunxiaoConfig, yunxiaoConfigured } from '../../state/yunxiaoConfig';
 
 /**
  * 云效需求缺陷管理能力模块：工单查询/详情/流转/评论/迭代/成员/设置。
@@ -9,6 +8,7 @@ import { ensureYunxiaoConfigured } from '../../../ui/yunxiaoFlow';
 
 const yunxiaoListTasks: AgentTool = {
   name: 'yunxiao_list_tasks',
+  readOnly: true,
   description: '查询云效工作项列表（需求/缺陷/任务），支持按类型、状态、迭代、关键词过滤',
   parameters: {
     type: 'object',
@@ -21,7 +21,7 @@ const yunxiaoListTasks: AgentTool = {
     },
   },
   async execute(args, ctx): Promise<ToolResult> {
-    if (!ensureYunxiaoConfigured()) {
+    if (!yunxiaoConfigured()) {
       return { success: false, output: '云效未配置，请先执行 sjn yunxiao-config set-project <项目ID>' };
     }
     const items = await yunxiao.listWorkItems({
@@ -42,6 +42,7 @@ const yunxiaoListTasks: AgentTool = {
 
 const yunxiaoViewTask: AgentTool = {
   name: 'yunxiao_view_task',
+  readOnly: true,
   description: '查看单个云效工单的详细信息与评论历史',
   parameters: {
     type: 'object',
@@ -105,6 +106,7 @@ const yunxiaoComment: AgentTool = {
     },
     required: ['taskId', 'content'],
   },
+  needsConfirm: true,
   async execute(args): Promise<ToolResult> {
     const issue = await yunxiao.getWorkItem(String(args.taskId));
     await yunxiao.addComment(issue.id, String(args.content));
@@ -114,6 +116,7 @@ const yunxiaoComment: AgentTool = {
 
 const yunxiaoListSprints: AgentTool = {
   name: 'yunxiao_list_sprints',
+  readOnly: true,
   description: '列出当前项目的所有迭代（Sprint）',
   parameters: { type: 'object', properties: {} },
   async execute(): Promise<ToolResult> {
@@ -128,6 +131,7 @@ const yunxiaoListSprints: AgentTool = {
 
 const yunxiaoListMembers: AgentTool = {
   name: 'yunxiao_list_members',
+  readOnly: true,
   description: '列出当前项目的成员列表，可按姓名过滤',
   parameters: {
     type: 'object',

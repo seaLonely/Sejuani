@@ -1,4 +1,4 @@
-import { Component } from '../../types';
+import { Component } from '../types';
 import { chalk, logger } from '../../utils/logger';
 import { findProjectsUsing } from '../usage';
 import { analyzeLayers } from '../depsTree';

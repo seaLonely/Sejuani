@@ -1,5 +1,5 @@
 import { Capability, AgentTool, AgentContext, ToolResult } from '../types';
-import { resolveScanTarget } from '../../configLoader';
+import { resolveScanTarget } from '../../config';
 import { discoverComponents } from '../../discover';
 import { catalogFromComponents } from '../../catalog';
 import { findProjectsUsing, listComponentsOfProject } from '../../usage';
@@ -11,6 +11,7 @@ import { analyzeLayers } from '../../depsTree';
 
 const reposDiscover: AgentTool = {
   name: 'repos_discover',
+  readOnly: true,
   description: '扫描并展示当前域的组件库或工程仓库列表（名称、版本、路径）',
   parameters: {
     type: 'object',
@@ -35,6 +36,7 @@ const reposDiscover: AgentTool = {
 
 const reposCatalog: AgentTool = {
   name: 'repos_catalog',
+  readOnly: true,
   description: '列出组件 catalog（所有组件的名称和当前版本），可按关键词过滤',
   parameters: {
     type: 'object',
@@ -57,6 +59,7 @@ const reposCatalog: AgentTool = {
 
 const reposWhoUses: AgentTool = {
   name: 'repos_who_uses',
+  readOnly: true,
   description: '查询哪些工程项目使用了指定的组件（反向依赖查询）',
   parameters: {
     type: 'object',
@@ -79,6 +82,7 @@ const reposWhoUses: AgentTool = {
 
 const repsDepsTree: AgentTool = {
   name: 'repos_deps_tree',
+  readOnly: true,
   description: '展示组件库的依赖分层（layer-0 为最底层无依赖组件，层级递增）',
   parameters: { type: 'object', properties: {} },
   async execute(args, ctx): Promise<ToolResult> {
@@ -95,6 +99,7 @@ const repsDepsTree: AgentTool = {
 
 const reposProjectDeps: AgentTool = {
   name: 'repos_project_deps',
+  readOnly: true,
   description: '展示某个工程项目依赖了哪些内部组件及其版本',
   parameters: {
     type: 'object',

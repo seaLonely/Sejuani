@@ -14,6 +14,7 @@ import { register as registerIssue } from './issue';
 import { register as registerFix } from './fix';
 import { register as registerTask } from './task';
 import { register as registerAgent } from './agent';
+import { register as registerServe } from './serve';
 
 /** 依次注册所有命令组到 program。 */
 export function registerAll(program: Command): void {
@@ -32,4 +33,5 @@ export function registerAll(program: Command): void {
   registerFix(program); // fix <issueId>
   registerTask(program); // task / task list / task do / task done
   registerAgent(program); // agent / chat
+  registerServe(program); // serve（本地 HTTP API 服务）
 }

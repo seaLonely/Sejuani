@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import { logger } from '../../utils/logger';
 import { runFixFlow } from '../../ui/yunxiaoFlow';
-import { CoderTool, isCoderTool, CODER_TOOLS } from '../../core/coderConfig';
+import { CoderTool, isCoderTool, CODER_TOOLS } from '../../core/state/coderConfig';
 
 interface FixOpts {
   dir?: string;

@@ -2,11 +2,12 @@ import fs from 'fs';
 import path from 'path';
 import { Command } from 'commander';
 import { chalk, logger } from '../../utils/logger';
-import { loadConfig } from '../../core/configLoader';
-import { SejuaniConfig } from '../../config';
+import { loadConfig } from '../../core/config';
+import { SejuaniConfig } from '../../core/config';
 import { discoverComponents } from '../../core/discover';
 import { discoverAndSelect } from '../../ui/select';
 import { createVirtualSpace } from '../../core/link';
+import { inquirerConfirm } from '../../ui/prompt';
 import { flattenLayersJson } from '../../core/depsTree';
 import {
   getVirtualSpaces,
@@ -18,7 +19,7 @@ import {
   membersFromComponents,
   vsStateFilePath,
   VsMember,
-} from '../../core/vsStore';
+} from '../../core/state/virtualSpaces';
 import { componentsTarget } from '../context';
 
 function printVsList(): void {
@@ -119,7 +120,7 @@ async function handleVs(
       logger.warn(`有 ${resolved.missing.length} 个成员目录已失效，已跳过: ${resolved.missing.join(', ')}`);
     }
     const into = path.resolve(opts.into ?? path.join(process.cwd(), name));
-    await createVirtualSpace(resolved.components, { into, force: !!opts.force, dryRun: false, yes: !!opts.yes });
+    await createVirtualSpace(resolved.components, { into, force: !!opts.force, dryRun: false, yes: !!opts.yes, confirm: inquirerConfirm });
     patchVirtualSpace(name, { linkedDir: into });
     return;
   }

@@ -1,5 +1,5 @@
 import { discoverComponents } from './discover';
-import { Component } from '../types';
+import { Component } from './types';
 import { chalk, logger } from '../utils/logger';
 
 export interface CatalogItem {

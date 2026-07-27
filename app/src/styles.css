@@ -1,0 +1,57 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 33% 96%;
+    --foreground: 212 44% 18%;
+    --card: 0 0% 100%;
+    --card-foreground: 212 44% 18%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 212 44% 18%;
+    --primary: 212 61% 45%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 214 30% 92%;
+    --secondary-foreground: 212 44% 18%;
+    --muted: 214 20% 69%;
+    --muted-foreground: 212 18% 52%;
+    --accent: 212 61% 45%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 4 62% 47%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 155 64% 33%;
+    --warning: 36 85% 51%;
+    --border: 214 25% 85%;
+    --input: 214 25% 85%;
+    --ring: 212 61% 45%;
+    --radius: 0.5rem;
+    --sidebar-background: 210 52% 23%;
+    --sidebar-foreground: 210 52% 92%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif;
+  }
+}
+
+/* ===== Sidebar custom styles (gradient not expressible in pure Tailwind) ===== */
+.sidebar-gradient {
+  background: linear-gradient(180deg, hsl(210 52% 23%) 0%, hsl(210 52% 19%) 100%);
+}
+
+/* ===== Chat bubble user gradient ===== */
+.bubble-user-gradient {
+  background: linear-gradient(135deg, hsl(212 61% 45%), hsl(212 61% 33%));
+}
+
+/* ===== Log panel dark theme ===== */
+.log-panel-dark {
+  background: hsl(212 44% 18%);
+  color: hsl(210 52% 92%);
+}
