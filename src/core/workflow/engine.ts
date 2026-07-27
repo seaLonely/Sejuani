@@ -2,8 +2,10 @@ import { chalk, logger } from '../../utils/logger';
 import { logEvent, startRunLog, endRunLog, isRunLogActive, currentRunLogFile } from '../../utils/fileLogger';
 import { ConfirmFn, PromptInputFn } from '../types';
 import { STEP_HANDLERS, confirmDangerous, evaluateSkipIf } from './steps';
-import { saveRunState, saveSpec, loadRunState } from './store';
+import { StepExecResult } from './steps/contract';
+import { saveRunState, saveSpec, loadRunState, ExecutionRecord, saveExecution, pruneExecutions } from './store';
 import { hydrateContext } from './context';
+import { renderParams, evalWhen, ExprContext, stepsView } from './expr';
 import { RunState, StepContext, StepResult, WorkflowSpec, WorkflowStep } from './types';
 
 /**
@@ -29,6 +31,15 @@ export interface RunOptions {
    * 回调异常会被吞掉，不影响工作流执行。
    */
   onEvent?: (e: WorkflowEvent) => void;
+  /**
+   * 执行存档（W2）：提供时由引擎负责更新状态（running/ok/failed/waiting/waiting-approval）并落盘。
+   */
+  execution?: ExecutionRecord;
+  /**
+   * 无人值守（W4）：调度器触发的执行。危险步骤不弹确认，
+   * 直接置 execution 为 waiting-approval 挂起，由人批准后 resume。
+   */
+  unattended?: boolean;
 }
 
 /** 执行进度事件（onEvent 外发） */
@@ -105,10 +116,12 @@ function now(): string {
   return new Date().toISOString();
 }
 
-/** 初始化/续跑的运行状态：resume 时读旧 state，否则全新 pending。 */
-function initRunState(spec: WorkflowSpec, resume: boolean): RunState {
+/** 初始化/续跑的运行状态：resume 优先用注入的执行存档断点（prevState），
+ * 其次回退按 spec 共享的 <id>.state.json——避免同 spec 新执行覆盖断点后，
+ * 挂起执行唤醒时读错状态导致漏执行/危险步骤重复执行。 */
+function initRunState(spec: WorkflowSpec, resume: boolean, prevState?: RunState): RunState {
   if (resume) {
-    const prev = loadRunState(spec.id);
+    const prev = prevState && prevState.results.length > 0 ? prevState : loadRunState(spec.id);
     if (prev) {
       // 补齐可能新增的步骤
       const known = new Map(prev.results.map((r) => [r.id, r]));
@@ -133,12 +146,12 @@ function sleep(ms: number): Promise<void> {
 async function executeWithRetry(
   step: WorkflowStep,
   ctx: StepContext
-): Promise<{ ok: boolean; reason?: string; outputs?: Record<string, unknown> }> {
+): Promise<StepExecResult> {
   const handler = STEP_HANDLERS[step.kind];
   const policy = step.retry ?? handler.describe().defaultRetry;
   const maxRetries = policy?.max ?? 0;
   const delayMs = policy?.delayMs ?? 3000;
-  let last: { ok: boolean; reason?: string; outputs?: Record<string, unknown> };
+  let last: StepExecResult;
   for (let attempt = 0; ; attempt++) {
     try {
       last = await handler.execute(step, ctx);
@@ -197,7 +210,7 @@ export async function runWorkflow(spec: WorkflowSpec, ctx: StepContext, opts: Ru
   if (!reused) logger.info(chalk.dim(`运行日志: ${runLogPath}`));
   logEvent('info', 'workflow.start', { specId: spec.id, title: spec.title, resume: opts.resume, steps: ordered.length });
 
-  const state = initRunState(spec, opts.resume);
+  const state = initRunState(spec, opts.resume, opts.execution?.state);
   if (!state.startedAt) state.startedAt = now();
   // resume：把已完成步骤的产物回放到执行上下文（如 mrUrl / foundProjects）
   if (opts.resume) hydrateContext(state, spec, ctx);
@@ -210,21 +223,48 @@ export async function runWorkflow(spec: WorkflowSpec, ctx: StepContext, opts: Ru
       /* 事件回调异常忽略 */
     }
   };
+  /** 同步执行存档（W2）：提供 execution 时更新状态并落盘 */
+  const exec = opts.execution;
+  /** 进入 running 前保留原挂起信息：早退路径（确认被拒/超时）需回退而非卡死在 running */
+  const priorStatus = exec?.status;
+  const priorPending = exec?.pendingStep;
+  const syncExec = (patch: Partial<ExecutionRecord>): void => {
+    if (!exec) return;
+    Object.assign(exec, patch);
+    exec.state = state;
+    saveExecution(exec);
+  };
+  syncExec({ status: 'running', wakeAt: undefined, wakeWebhook: undefined, pendingStep: undefined });
+  /** 表达式上下文（W2）：每步执行前渲染 params */
+  const exprCtx = (): ExprContext => ({
+    steps: stepsView(ctx.runOutputs),
+    trigger: ctx.trigger,
+    env: { domain: ctx.config.activeDomain },
+  });
 
-  // 整体确认全部危险步骤
+  // 整体确认全部危险步骤（无人值守时跳过：危险步骤到达时转 waiting-approval）
   const dangerous = ordered.filter((s) => s.dangerous && resultById.get(s.id)?.status !== 'ok');
-  if (dangerous.length > 0 && !opts.yes) {
+  if (dangerous.length > 0 && !opts.yes && !opts.unattended) {
     logger.warn(`\n本次将执行 ${dangerous.length} 个不可逆步骤：`);
     for (const s of dangerous) logger.info('  ' + chalk.yellow(`⚠ ${s.title} (${s.kind})`));
     const proceed = opts.confirm ? await opts.confirm('已知晓上述不可逆操作，继续?') : false;
     if (!proceed) {
       logger.warn('已取消，未执行任何步骤。');
+      // 回退执行存档状态：批准场景（原 waiting-approval）回到批准队列，其它标记 failed，
+      // 避免卡死在 running；同时关闭运行日志句柄防止后续无关日志污染
+      if (priorStatus === 'waiting-approval') {
+        syncExec({ status: 'waiting-approval', pendingStep: priorPending });
+      } else {
+        syncExec({ status: 'failed', endedAt: now() });
+      }
+      endRunLog({ cancelled: true });
       return false;
     }
   }
 
   let allOk = true;
   let done = 0;
+  let failedStep: { stepId: string; reason: string } | null = null;
   for (const step of ordered) {
     done++;
     const result = resultById.get(step.id)!;
@@ -245,6 +285,29 @@ export async function runWorkflow(spec: WorkflowSpec, ctx: StepContext, opts: Ru
       continue;
     }
 
+    // 级联跳过（W3）：直接上游被跳过且未声明 alwaysRun → 本步跳过
+    const skippedUpstream = (step.dependsOn ?? []).find((d) => resultById.get(d)?.status === 'skipped');
+    if (skippedUpstream && !step.alwaysRun) {
+      result.status = 'skipped';
+      result.reason = `[级联跳过] 上游 ${skippedUpstream} 已跳过`;
+      saveRunState(state);
+      logEvent('info', 'step.cascadeSkip', { id: step.id, upstream: skippedUpstream });
+      logger.step(`[${done}/${ordered.length}] 级联跳过：${chalk.dim(step.title)}（上游 ${skippedUpstream}）`);
+      emit({ type: 'step-end', stepId: step.id, title: step.title, status: 'skipped', reason: result.reason, index: done, total: ordered.length });
+      continue;
+    }
+
+    // 条件表达式 when（W3）：求值假值 → 跳过
+    if (step.when && !evalWhen(step.when, exprCtx())) {
+      result.status = 'skipped';
+      result.reason = `[条件不满足] when: ${step.when}`;
+      saveRunState(state);
+      logEvent('info', 'step.whenSkip', { id: step.id, when: step.when });
+      logger.step(`[${done}/${ordered.length}] 条件不满足：${chalk.dim(step.title)}`);
+      emit({ type: 'step-end', stepId: step.id, title: step.title, status: 'skipped', reason: result.reason, index: done, total: ordered.length });
+      continue;
+    }
+
     // 补全缺失的必填参数（如 git.merge 的 from）
     if (step.needsInput && step.needsInput.length > 0) {
       const stillEmpty = await fillNeedsInput(step, opts.yes, opts.promptInput);
@@ -261,8 +324,17 @@ export async function runWorkflow(spec: WorkflowSpec, ctx: StepContext, opts: Ru
       saveSpec(spec); // 补全后回写定义，便于 resume
     }
 
-    // 危险步骤逐步二次确认（未给 --yes 时）
+    // 危险步骤：无人值守 → 挂起待批准；否则逐步二次确认（未给 --yes 时）
     if (step.dangerous && !opts.yes) {
+      if (opts.unattended) {
+        saveRunState(state);
+        syncExec({ status: 'waiting-approval', pendingStep: { id: step.id, title: step.title, kind: step.kind } });
+        logEvent('warn', 'step.waitingApproval', { id: step.id, title: step.title });
+        logger.warn(`危险步骤「${step.title}」需人工批准，执行已挂起（sjn flow approvals 查看）。`);
+        emit({ type: 'workflow-end', status: 'waiting-approval', reason: `待批准：${step.title}`, total: ordered.length });
+        endRunLog({ waitingApproval: step.id });
+        return false;
+      }
       const ok = await confirmDangerous(step, opts.confirm);
       if (!ok) {
         result.status = 'skipped';
@@ -281,7 +353,9 @@ export async function runWorkflow(spec: WorkflowSpec, ctx: StepContext, opts: Ru
     result.startedAt = now();
     saveRunState(state);
     logEvent('info', 'step.start', { id: step.id, kind: step.kind, title: step.title, params: step.params });
-    const res = await executeWithRetry(step, ctx);
+    // 表达式渲染（W2）：用渲染副本执行，不回写 spec
+    const renderedStep: WorkflowStep = { ...step, params: renderParams(step.params, exprCtx()) };
+    const res = await executeWithRetry(renderedStep, ctx);
     result.status = res.ok ? 'ok' : 'failed';
     result.reason = res.reason;
     if (res.outputs) {
@@ -298,13 +372,42 @@ export async function runWorkflow(spec: WorkflowSpec, ctx: StepContext, opts: Ru
     });
     emit({ type: 'step-end', stepId: step.id, title: step.title, status: result.status, reason: result.reason, index: done, total: ordered.length });
 
+    // 挂起（W3 flow.wait）：本步已完成，整体置 waiting 落盘停止，到时/webhook 唤醒后 resume 继续下游
+    if (res.ok && res.suspend) {
+      syncExec({ status: 'waiting', wakeAt: res.suspend.wakeAt, wakeWebhook: res.suspend.wakeWebhook });
+      logger.warn(`执行已挂起等待（${res.suspend.wakeAt ? `唤醒时间 ${res.suspend.wakeAt}` : `webhook: ${res.suspend.wakeWebhook}`}）。`);
+      emit({ type: 'workflow-end', status: 'waiting', reason: result.reason, total: ordered.length });
+      endRunLog({ waiting: step.id });
+      return false;
+    }
+
     if (result.status !== 'ok') {
       allOk = false;
+      failedStep = { stepId: step.id, reason: result.reason ?? '未知原因' };
       logger.error(`步骤失败：${step.title}（${result.reason ?? '未知原因'}）`);
       logger.warn(`已在此处停止。修复后可执行： sjn flow resume ${spec.id}`);
       break;
     }
     logger.success(`完成：${step.title}${result.reason ? chalk.dim('  ' + result.reason) : ''}`);
+  }
+
+  // 失败收尾链（W3 onFailure）：主链步骤终态失败时顺序执行，自身失败仅记录不递归
+  if (failedStep && spec.onFailure && spec.onFailure.length > 0) {
+    logger.title('执行失败收尾步骤（onFailure）');
+    const onFailureResults: Array<{ id: string; status: string; reason?: string }> = [];
+    for (const s of spec.onFailure) {
+      const fCtx: ExprContext = { ...exprCtx(), failure: failedStep };
+      const rendered: WorkflowStep = { ...s, params: renderParams(s.params, fCtx) };
+      try {
+        const r = await STEP_HANDLERS[s.kind].execute(rendered, ctx);
+        onFailureResults.push({ id: s.id, status: r.ok ? 'ok' : 'failed', reason: r.reason });
+        logEvent(r.ok ? 'info' : 'warn', 'onFailure.step', { id: s.id, ok: r.ok, reason: r.reason });
+      } catch (err) {
+        onFailureResults.push({ id: s.id, status: 'failed', reason: (err as Error).message });
+        logEvent('warn', 'onFailure.step', { id: s.id, ok: false, reason: (err as Error).message });
+      }
+    }
+    if (exec) exec.onFailure = onFailureResults;
   }
 
   // 汇总
@@ -335,6 +438,8 @@ export async function runWorkflow(spec: WorkflowSpec, ctx: StepContext, opts: Ru
     failed: notOk.map((r) => ({ id: r.id, status: r.status, reason: r.reason })),
   });
   endRunLog({ allOk, okCount, total: state.results.length });
+  syncExec({ status: allOk ? 'ok' : 'failed', endedAt: now() });
+  if (exec) pruneExecutions(exec.specId);
   emit({ type: 'workflow-end', status: allOk ? 'ok' : 'failed', reason: `成功 ${okCount}/${state.results.length} 步`, total: state.results.length });
   logger.info(chalk.dim(`完整运行日志: ${runLogPath}`));
   return allOk;

@@ -2,9 +2,11 @@ import fs from 'fs';
 import { Router, sendJson, sendError, sseOpen, sseSend } from '../http';
 import { EventHub } from '../hub';
 import { SejuaniConfig } from '../../core/config';
-import { listSpecs, loadSpec, loadRunState, saveSpec } from '../../core/workflow/store';
+import { listSpecs, loadSpec, loadRunState, saveSpec, listExecutions, loadExecution, listExecutionsByStatus, findExecution, saveExecution } from '../../core/workflow/store';
 import { runWorkflow } from '../../core/workflow/engine';
 import { buildStepContext } from '../../core/workflow/context';
+import { resumeExecution, isSpecRunning, computeNextAt } from '../../core/workflow/scheduler';
+import { parseCron } from '../../core/workflow/cron';
 import { WorkflowSpec } from '../../core/workflow/types';
 import { runLogFile, tailRunLog } from '../../utils/fileLogger';
 import { yunxiaoConfigured } from '../../core/state/yunxiaoConfig';
@@ -90,6 +92,61 @@ function startRun(config: SejuaniConfig, hub: EventHub, spec: WorkflowSpec, resu
 }
 
 export function registerWorkflowRoutes(router: Router, hub: EventHub, config: SejuaniConfig): void {
+  // 激活触发器列表（W1）——字面路径先于 /api/workflows/:id 注册，避免被路径参数吞掉
+  router.get('/api/workflows/triggers', (r) => {
+    const items = listSpecs()
+      .filter((s) => s.enabled && s.trigger && s.trigger.type !== 'manual')
+      .map((s) => ({ id: s.id, title: s.title, trigger: s.trigger, nextAt: computeNextAt(s.trigger!) }));
+    sendJson(r.res, 200, items);
+  });
+
+  // 待批准队列（W4）
+  router.get('/api/workflows/approvals', (r) => {
+    const items = listExecutionsByStatus('waiting-approval').map((e) => ({
+      execId: e.execId,
+      specId: e.specId,
+      pendingStep: e.pendingStep,
+      trigger: e.trigger,
+      startedAt: e.startedAt,
+    }));
+    sendJson(r.res, 200, items);
+  });
+
+  // 批准/拒绝挂起的执行（W4）：批准后危险确认走 SSE 确认桥（频道 workflow:<specId>）
+  router.post('/api/workflows/executions/:execId/approve', (r) => {
+    const exec = findExecution(r.params.execId);
+    if (!exec || exec.status !== 'waiting-approval') {
+      sendError(r.res, 404, `未找到待批准执行: ${r.params.execId}`);
+      return;
+    }
+    if (runningId || isSpecRunning(exec.specId)) {
+      sendError(r.res, 409, '有工作流正在执行中，请稍后批准。');
+      return;
+    }
+    const channel = channelOf(exec.specId);
+    hub.publish(channel, 'run-start', { id: exec.specId, resume: true, approved: exec.execId });
+    void resumeExecution(config, exec, {
+      unattended: false,
+      confirm: (message) => hub.ask(channel, message),
+      onEvent: (e) => hub.publish(channel, 'engine-event', e),
+    })
+      .then((allOk) => hub.publish(channel, 'run-end', { allOk, state: loadRunState(exec.specId) }))
+      .catch(() => hub.publish(channel, 'run-end', { allOk: false, error: 'resume 异常' }));
+    sendJson(r.res, 202, { ok: true, execId: exec.execId, resumed: true });
+  });
+
+  router.post('/api/workflows/executions/:execId/reject', (r) => {
+    const exec = findExecution(r.params.execId);
+    if (!exec || exec.status !== 'waiting-approval') {
+      sendError(r.res, 404, `未找到待批准执行: ${r.params.execId}`);
+      return;
+    }
+    exec.status = 'failed';
+    exec.endedAt = new Date().toISOString();
+    saveExecution(exec);
+    sendJson(r.res, 200, { ok: true, execId: exec.execId, rejected: true });
+  });
+
   // 工作流列表
   router.get('/api/workflows', (r) => {
     const items = listSpecs().map((s) => ({
@@ -131,6 +188,64 @@ export function registerWorkflowRoutes(router: Router, hub: EventHub, config: Se
   };
   router.post('/api/workflows/:id/run', handleRun(false));
   router.post('/api/workflows/:id/resume', handleRun(true));
+
+  // 激活/停用触发器（W1）
+  router.post('/api/workflows/:id/enable', (r) => {
+    const spec = loadSpec(r.params.id);
+    if (!spec) {
+      sendError(r.res, 404, `未找到工作流: ${r.params.id}`);
+      return;
+    }
+    if (!spec.trigger || spec.trigger.type === 'manual') {
+      sendError(r.res, 400, '工作流未声明触发器（spec.trigger），无法激活');
+      return;
+    }
+    if (spec.trigger.type === 'cron') {
+      try {
+        parseCron(spec.trigger.expr);
+      } catch (err) {
+        sendError(r.res, 400, `cron 表达式非法: ${(err as Error).message}`);
+        return;
+      }
+    }
+    spec.enabled = true;
+    saveSpec(spec);
+    sendJson(r.res, 200, { ok: true, id: spec.id, enabled: true, trigger: spec.trigger });
+  });
+
+  router.post('/api/workflows/:id/disable', (r) => {
+    const spec = loadSpec(r.params.id);
+    if (!spec) {
+      sendError(r.res, 404, `未找到工作流: ${r.params.id}`);
+      return;
+    }
+    spec.enabled = false;
+    saveSpec(spec);
+    sendJson(r.res, 200, { ok: true, id: spec.id, enabled: false });
+  });
+
+  // 执行历史（W2）
+  router.get('/api/workflows/:id/executions', (r) => {
+    const items = listExecutions(r.params.id).map((e) => ({
+      execId: e.execId,
+      status: e.status,
+      trigger: e.trigger,
+      startedAt: e.startedAt,
+      endedAt: e.endedAt,
+      okSteps: e.state.results?.filter((s) => s.status === 'ok').length ?? 0,
+      totalSteps: e.state.results?.length ?? 0,
+    }));
+    sendJson(r.res, 200, items);
+  });
+
+  router.get('/api/workflows/:id/executions/:execId', (r) => {
+    const rec = loadExecution(r.params.id, r.params.execId);
+    if (!rec) {
+      sendError(r.res, 404, `未找到执行: ${r.params.execId}`);
+      return;
+    }
+    sendJson(r.res, 200, rec);
+  });
 
   // SSE：执行进度 + 危险步骤确认
   router.get('/api/workflows/:id/events', (r) => {

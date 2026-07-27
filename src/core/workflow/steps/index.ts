@@ -8,6 +8,8 @@ import { gitPull, gitMerge, gitMr } from './git';
 import { coderFix } from './coder';
 import { shellRun } from './shell';
 import { notifySummary } from './notify';
+import { flowForeach, flowWait } from './flow';
+import { agentTask } from './agent';
 import { yunxiaoComment, yunxiaoTransition } from './yunxiao';
 import { resolveTargetComponents, resolveTargetProjects } from './helpers';
 
@@ -32,6 +34,9 @@ export const STEP_HANDLERS: Record<StepKind, StepHandler> = {
   'git.mr': gitMr,
   'shell.run': shellRun,
   'notify.summary': notifySummary,
+  'flow.foreach': flowForeach,
+  'flow.wait': flowWait,
+  'agent.task': agentTask,
   'yunxiao.comment': yunxiaoComment,
   'yunxiao.transition': yunxiaoTransition,
 };

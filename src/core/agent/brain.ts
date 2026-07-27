@@ -29,6 +29,12 @@ export interface BrainOptions {
   sessionId?: string;
   /** 提供 sessionId 时是否从 sessionStore 恢复历史 */
   resume?: boolean;
+  /** 工具白名单（W4 agent.task 受限视图）：提供时白名单外工具对 LLM 不可见 */
+  allowTools?: string[];
+  /** 预授权工具：初始化即加入 grantedTools，needsConfirm 工具免确认（agent.task 白名单即授权边界） */
+  grantedTools?: string[];
+  /** 单轮最大 tool_calls 循环次数（缺省 10；agent.task 置 6 控制无人值守成本） */
+  maxRounds?: number;
 }
 
 export interface ProcessOptions {
@@ -82,7 +88,7 @@ export class AgentBrain {
       config,
       history: [{ role: 'system', content: this.buildSystemPrompt(config) }],
       confirm: async () => true, // REPL/serve 层会覆盖
-      grantedTools: new Set<string>(),
+      grantedTools: new Set<string>(opts.grantedTools ?? []),
       print: (text) => logger.info(text),
     };
     // 从 sessionStore 恢复历史（system prompt 用最新配置重建，其余沿用）
@@ -117,14 +123,22 @@ export class AgentBrain {
     this.ctx.print = fn;
   }
 
+  /** 受限工具视图：allowTools 提供时仅暴露白名单内工具 */
+  private tools(): ReturnType<typeof getAllTools> {
+    const all = getAllTools();
+    if (!this.opts.allowTools) return all;
+    const allow = new Set(this.opts.allowTools);
+    return all.filter((t) => allow.has(t.name));
+  }
+
   /** 获取已注册工具数量 */
   getToolCount(): number {
-    return getAllTools().length;
+    return this.tools().length;
   }
 
   /** 获取全部工具名列表（供 /tools 命令） */
   getToolNames(): string[] {
-    return getAllTools().map((t) => `${t.name}: ${t.description}`);
+    return this.tools().map((t) => `${t.name}: ${t.description}`);
   }
 
   /** 会话累计统计（轮次/工具调用/token 用量） */
@@ -157,10 +171,14 @@ export class AgentBrain {
 
       this.ctx.history.push({ role: 'user', content: userInput });
 
-      const toolFunctions = getToolFunctions();
+      const allowSet = this.opts.allowTools ? new Set(this.opts.allowTools) : null;
+      const toolFunctions = allowSet
+        ? getToolFunctions().filter((f) => allowSet.has(f.name))
+        : getToolFunctions();
+      const maxRounds = this.opts.maxRounds ?? MAX_TOOL_ROUNDS;
       let rounds = 0;
 
-      while (rounds < MAX_TOOL_ROUNDS) {
+      while (rounds < maxRounds) {
         rounds++;
         if (this.abortRequested) return this.finish('[已取消] 本轮请求已中断。');
 
@@ -258,8 +276,8 @@ export class AgentBrain {
   /** 执行单个工具调用，返回结果文本 */
   private async executeTool(tc: ToolCall): Promise<string> {
     const tool = getToolByName(tc.function.name);
-    if (!tool) {
-      return JSON.stringify({ success: false, output: `未知工具: ${tc.function.name}` });
+    if (!tool || (this.opts.allowTools && !this.opts.allowTools.includes(tool.name))) {
+      return JSON.stringify({ success: false, output: `未知或未授权工具: ${tc.function.name}` });
     }
 
     let args: Record<string, any> = {};

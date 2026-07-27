@@ -14,6 +14,11 @@ export interface StepExecResult {
   reason?: string;
   /** 步骤产物：进 checkpoint（StepResult.outputs），resume 时回放到 StepContext */
   outputs?: Record<string, unknown>;
+  /**
+   * 挂起请求（flow.wait）：本步视为完成（ok），但整体执行置 waiting 落盘停止，
+   * 由调度器到时（wakeAt）或 webhook（wakeWebhook）唤醒后 resume 继续下游。
+   */
+  suspend?: { wakeAt?: string; wakeWebhook?: string };
 }
 
 /** 供 planner 拼接 prompt 的步骤能力说明 */

@@ -80,6 +80,8 @@ const REQUIRED_PARAMS: Partial<Record<StepKind, string[]>> = {
   'yunxiao.transition': ['toStatusName'],
   'yunxiao.comment': ['content'],
   'shell.run': ['command'],
+  'flow.foreach': ['items'],
+  'agent.task': ['goal'],
 };
 
 /** 计算一个步骤缺失的必填参数名。 */

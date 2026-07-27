@@ -23,8 +23,23 @@ export type StepKind =
   | 'coder.fix'
   | 'shell.run'
   | 'notify.summary'
+  | 'flow.foreach'
+  | 'flow.wait'
+  | 'agent.task'
   | 'yunxiao.comment'
   | 'yunxiao.transition';
+
+/** 触发器定义（W1）：缺省 manual（仅手动触发，现状行为） */
+export type TriggerSpec =
+  | { type: 'manual' }
+  | { type: 'interval'; everyMinutes: number }
+  | { type: 'cron'; expr: string }
+  | {
+      type: 'yunxiao.item';
+      pollMinutes: number;
+      filter?: { itemType?: 'Bug' | 'Req' | 'Task'; statusName?: string; assignedToMe?: boolean };
+    }
+  | { type: 'webhook'; path: string };
 
 /** 单个工作流步骤 */
 export interface WorkflowStep {
@@ -33,7 +48,7 @@ export interface WorkflowStep {
   kind: StepKind;
   /** 人类可读标题 */
   title: string;
-  /** 步骤参数（结构由各 kind 约定，见 steps.ts） */
+  /** 步骤参数（结构由各 kind 约定，见 steps/）；字符串值支持 {{...}} 表达式 */
   params: Record<string, any>;
   /** 是否为不可逆/危险步骤（发布/合并/push），执行前需高亮并二次确认 */
   dangerous?: boolean;
@@ -45,6 +60,10 @@ export interface WorkflowStep {
   retry?: { max: number; delayMs?: number };
   /** 条件跳过：命中则标记 skipped 但不中断后续步骤 */
   skipIf?: 'no-changes' | 'no-targets';
+  /** 条件表达式（W3）：如 steps.s1.outputs.foundProjects；求值假值 → skipped[条件不满足] */
+  when?: string;
+  /** 直接上游被跳过时仍执行（缺省：上游 skipped 则本步级联跳过） */
+  alwaysRun?: boolean;
 }
 
 /** 完整工作流 */
@@ -57,6 +76,12 @@ export interface WorkflowSpec {
   /** 所属域（当前 activeDomain） */
   domain: string;
   steps: WorkflowStep[];
+  /** 触发器（W1）；缺省 manual */
+  trigger?: TriggerSpec;
+  /** 触发器是否激活（对应 n8n workflow.active） */
+  enabled?: boolean;
+  /** 失败收尾步骤（W3）：主链任一步终态失败后顺序执行，表达式可用 {{failure.*}} */
+  onFailure?: WorkflowStep[];
 }
 
 export type StepStatus = 'pending' | 'ok' | 'failed' | 'skipped';
@@ -104,6 +129,8 @@ export interface StepContext {
   yes: boolean;
   /** 各步骤产物（stepId -> outputs）；引擎每步后写入，notify.summary 等汇总步骤消费；resume 时由 hydrateContext 回放 */
   runOutputs?: Record<string, Record<string, unknown>>;
+  /** 触发上下文（W1 调度器/webhook 触发时注入，供表达式 {{trigger.*}} 引用） */
+  trigger?: { type: string; firedAt: string; item?: unknown; payload?: unknown };
   /** 云效修复流（fix-bug）专用的运行时数据；非该流程为 undefined */
   yunxiao?: YunxiaoStepData;
 }
