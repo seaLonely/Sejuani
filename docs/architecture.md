@@ -2,7 +2,7 @@
 
 > 面向前端工程/组件批量治理的终端工具，已演进为具备记忆、多模型、自主编码能力的编码智能体。
 > 版本基线：v1.4.0 之后（R1-R5：多模型 + 记忆 + Harness + 编码闭环 + 桌面端已落地）。
-> 技术约束：零第三方 UI 库；仅 4 个运行时依赖（chalk / commander / fast-glob / inquirer）；Node 16 兼容。
+> 技术约束：零第三方 UI 库；仅 4 个运行时依赖（chalk / commander / fast-glob / inquirer）；Node 20+。
 
 ---
 

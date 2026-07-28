@@ -2,6 +2,9 @@
 node_modules/
 dist/
 
+# 包管理器：本项目用 yarn，不提交 npm 的 package-lock.json
+package-lock.json
+
 # Tauri 桌面端构建产物
 app/src-tauri/target/
 

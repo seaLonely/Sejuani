@@ -6,7 +6,7 @@ import { logEvent } from '../utils/fileLogger';
 
 /**
  * 极简 OpenAI(兼容) chat completions 客户端：只用 Node 内置 https/http，
- * 不引入 openai SDK（其 v4 需要 Node 18+，本 CLI 跑在 Node 16）。
+ * 不引入 openai SDK（保持零运行时依赖）。
  *
  * chatJSON 要求模型返回一个 JSON 对象（response_format=json_object），
  * 并对返回内容做容错解析（剥离 ```json 代码块 / 提取首个 {...}）。
@@ -42,16 +42,10 @@ export interface ChatToolsOptions {
   temperature?: number;
   timeoutMs?: number;
   tools: ToolFunction[];
-  /** 可选中止信号（兼容 AbortSignal）：触发后销毁进行中的请求 */
-  signal?: AbortLike;
+  /** 可选中止信号（原生 AbortSignal）：触发后销毁进行中的请求 */
+  signal?: AbortSignal;
   /** S1 场景角色：按 roles 绑定解析 profile（chat/agentTask 等） */
   role?: AiRole;
-}
-
-/** 轻量中止信号接口（结构兼容 Node 16.14+ 的 AbortSignal） */
-export interface AbortLike {
-  readonly aborted: boolean;
-  addEventListener?(type: 'abort', listener: () => void): void;
 }
 
 /** 一次请求的 token 用量（上游返回 usage 时才有） */
@@ -98,7 +92,7 @@ function postJson(
   headers: Record<string, string>,
   payload: string,
   timeoutMs: number,
-  signal?: AbortLike
+  signal?: AbortSignal
 ): Promise<HttpJsonResult> {
   return new Promise((resolve, reject) => {
     let url: URL;

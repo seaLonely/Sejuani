@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 
 /**
- * 极小 NDJSON 持久化日志（零第三方依赖，Node16 兼容）。
+ * 极小 NDJSON 持久化日志（零第三方依赖，Node 20+）。
  *
  * 目标：终结 debug「盲盒」——把 AI 请求/响应原文、每步 start/end/结果、
  * 命令调用与错误落盘，便于事后追踪。

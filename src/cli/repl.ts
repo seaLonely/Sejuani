@@ -122,48 +122,66 @@ export async function startAgentRepl(config: SejuaniConfig, opts: ReplOptions = 
 
   rl.prompt();
 
-  // 实时过滤命令浮层（对齐 opencode：随输入收窄，而非一次铺全）。仅 TTY。
-  // 零依赖实现：在输入行下方用 ANSI 光标保存/恢复绘制，不干扰 readline 行编辑。
-  let menuLines = 0;
-  const clearMenu = (): void => {
-    if (menuLines === 0) return;
-    let s = '\x1b7'; // 保存光标
-    for (let k = 0; k < menuLines; k++) s += '\n\x1b[2K'; // 逐行下移并清除
-    s += '\x1b8'; // 恢复光标
-    process.stdout.write(s);
-    menuLines = 0;
+  // 实时过滤命令浮层（对齐 opencode：随输入收窄）。仅 TTY。
+  // 关键：readline 每次刷新输入行会 self clearScreenDown（清除下方），所以我们只需
+  // 在它刷新后于下方“追加”菜单，并用相对光标移动（滚动安全）把光标移回输入行；
+  // 下一次按键 readline 自行清除旧菜单——顺应 readline，不再用不可靠的保存/恢复光标。
+  const PROMPT_W = 5; // “sjn> ” 显示宽
+  const dispWidth = (s: string): number => {
+    let w = 0;
+    for (const ch of s) {
+      const cp = ch.codePointAt(0) ?? 0;
+      w += (cp >= 0x1100 && (cp <= 0x115f || (cp >= 0x2e80 && cp <= 0xa4cf) || (cp >= 0xac00 && cp <= 0xd7a3) ||
+        (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xff00 && cp <= 0xff60) || (cp >= 0xffe0 && cp <= 0xffe6))) ? 2 : 1;
+    }
+    return w;
   };
-  const drawMenu = (items: Array<{ cmd: string; desc: string }>): void => {
-    clearMenu();
-    if (items.length === 0) return;
-    let s = '\x1b7';
-    items.forEach((it, idx) => {
-      const label = chalk.cyan(it.cmd.padEnd(10)) + ' ' + chalk.dim(it.desc);
-      s += '\n\x1b[2K' + (idx === 0 ? chalk.green('❯ ') : '  ') + label;
-    });
-    s += '\x1b8';
-    process.stdout.write(s);
-    menuLines = items.length;
+  // 按显示宽度截断（含 CJK），防窄终端菜单行折行导致光标回位行数不足
+  const clipW = (str: string, max: number): string => {
+    let w = 0, out = '';
+    for (const ch of str) {
+      const cw = dispWidth(ch);
+      if (w + cw > max) { out += '…'; break; }
+      out += ch; w += cw;
+    }
+    return out;
   };
+  let menuOpen = false;
   if (process.stdin.isTTY) {
     process.stdin.on('keypress', () => {
       setImmediate(() => {
+        // 关键：readline 在“行尾追加字符”时只回显、**不** clearScreenDown，旧菜单不会被清。
+        // 所以每次都主动先清除下方旧菜单（光标此刻在输入行光标位，其后无有效内容）。
+        if (menuOpen) { process.stdout.write('\x1b[0J'); menuOpen = false; }
         const l = rl.line ?? '';
         const m = /^\/([a-zA-Z0-9._-]*)$/.exec(l); // 仅“斜杠+命令名”阶段（无空格/参数）才提示
-        if (!m) { clearMenu(); return; }
+        if (!m) return;
         const q = l.toLowerCase();
         const all = [
           ...SLASH_COMMANDS,
           ...listSkills().map((s) => ({ cmd: '/' + s.name, desc: s.description || '技能' })),
         ];
-        drawMenu(all.filter((it) => it.cmd.toLowerCase().startsWith(q)).slice(0, 8));
+        const items = all.filter((it) => it.cmd.toLowerCase().startsWith(q)).slice(0, 8);
+        if (items.length === 0) return;
+        const maxW = Math.max(24, (process.stdout.columns || 80) - 2);
+        const rows = items.map((it, idx) => {
+          const desc = clipW(it.desc, Math.max(4, maxW - 14)); // 前缀（❯ + cmd(10) + 空格）约 14 列
+          return (idx === 0 ? chalk.green('❯ ') : '  ') + chalk.cyan(it.cmd.padEnd(10)) + ' ' + chalk.dim(desc);
+        });
+        const col = PROMPT_W + dispWidth(l.slice(0, rl.cursor ?? l.length));
+        let s = '';
+        for (const r of rows) s += '\n\x1b[0K' + r;          // 下方逐行写菜单（每行先清行尾）
+        s += `\x1b[${rows.length}A`;                       // 相对上移回输入行
+        s += '\r' + (col > 0 ? `\x1b[${col}C` : '');       // 回到输入光标列
+        process.stdout.write(s);
+        menuOpen = true;
       });
     });
   }
 
   rl.on('line', async (line) => {
-    // 提交时清除过滤浮层（回车后光标已下移，直接清除光标下方残留）
-    if (menuLines > 0) { process.stdout.write('\x1b[0J'); menuLines = 0; }
+    // 提交时清除过滤浮层（回车后光标已移到输入行下方，清除光标至屏幕末的菜单残留）
+    if (menuOpen) { process.stdout.write('\x1b[0J'); menuOpen = false; }
     let input = line.trim();
     if (!input) {
       rl.prompt();

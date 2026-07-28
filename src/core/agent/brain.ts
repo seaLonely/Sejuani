@@ -1,4 +1,4 @@
-import { ChatMessage, chatWithTools, chatWithToolsStream, chatJSON, ToolCall, AbortLike } from '../aiClient';
+import { ChatMessage, chatWithTools, chatWithToolsStream, chatJSON, ToolCall } from '../aiClient';
 import { chalk, logger } from '../../utils/logger';
 import { logEvent } from '../../utils/fileLogger';
 import { AgentContext, ConfirmAnswer } from './types';
@@ -51,26 +51,6 @@ export interface ProcessOptions {
   noTools?: boolean;
 }
 
-/** 轻量中止信号（结构兼容 AbortLike，不依赖全局 AbortController） */
-class AbortFlag implements AbortLike {
-  aborted = false;
-  private listeners: Array<() => void> = [];
-  addEventListener(_type: 'abort', listener: () => void): void {
-    this.listeners.push(listener);
-  }
-  abort(): void {
-    if (this.aborted) return;
-    this.aborted = true;
-    for (const l of this.listeners) {
-      try {
-        l();
-      } catch {
-        /* 忽略监听器异常 */
-      }
-    }
-  }
-}
-
 export class AgentBrain {
   private ctx: AgentContext;
   private opts: BrainOptions;
@@ -83,7 +63,7 @@ export class AgentBrain {
     startedAt: this.createdAt,
   };
   /** 当前轮的中止信号（abort() 触发） */
-  private currentAbort: AbortFlag | null = null;
+  private currentAbort: AbortController | null = null;
   private abortRequested = false;
   /** 是否正在处理一轮对话 */
   private processing = false;
@@ -233,14 +213,14 @@ export class AgentBrain {
         rounds++;
         if (this.abortRequested) return this.finish('[已取消] 本轮请求已中断。');
 
-        this.currentAbort = new AbortFlag();
+        this.currentAbort = new AbortController();
         let result;
         try {
           const callOpts = {
             model: this.opts.model,
             tools: toolFunctions,
             timeoutMs: 120000,
-            signal: this.currentAbort,
+            signal: this.currentAbort.signal,
             role: this.opts.aiRole ?? ('chat' as const),
           };
           result = procOpts.onDelta
