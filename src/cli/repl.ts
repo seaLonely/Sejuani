@@ -11,6 +11,8 @@ import { listSkills, saveSkill, loadSkill } from '../core/skill/store';
 import { draftSkillFromHistory } from '../core/skill/creator';
 import { runSkill } from '../core/skill/run';
 import { reflectUserProfile, saveProfileFacts } from '../core/agent/profileReflect';
+import { renderMarkdown } from '../utils/markdown';
+import { startSpinner, Spinner } from '../utils/spinner';
 
 /**
  * Agent REPL：交互式对话循环（流式输出）。
@@ -24,6 +26,48 @@ export interface ReplOptions {
   session?: string;
 }
 
+/** 内置 slash 命令清单（名称 + 一行说明），用于 Tab 补全与输入 / 时的提示 */
+const SLASH_COMMANDS: Array<{ cmd: string; desc: string }> = [
+  { cmd: '/goal', desc: '自主执行：/goal <目标>' },
+  { cmd: '/skill', desc: '技能：list 列出 / save [名] 固化当前会话' },
+  { cmd: '/profile', desc: '从会话反思并更新用户画像' },
+  { cmd: '/tools', desc: '展示已注册工具' },
+  { cmd: '/todos', desc: '查看当前任务清单' },
+  { cmd: '/memory', desc: '查看长期记忆（rm <id> 删除）' },
+  { cmd: '/model', desc: '查看/切换模型 profile' },
+  { cmd: '/stats', desc: '会话统计' },
+  { cmd: '/new', desc: '开启新会话（清空历史）' },
+  { cmd: '/compact', desc: '压缩对话历史' },
+  { cmd: '/retry', desc: '重发上一条输入' },
+  { cmd: '/undo', desc: '撤销上一轮' },
+  { cmd: '/think', desc: '思考强度 low|mid|high' },
+  { cmd: '/clear', desc: '清除对话历史' },
+  { cmd: '/help', desc: '显示帮助' },
+  { cmd: '/exit', desc: '退出 Agent' },
+];
+
+/** readline Tab 补全：/ 开头时补全内置命令 + 已保存技能名 */
+function slashCompleter(line: string): [string[], string] {
+  if (!line.startsWith('/')) return [[], line];
+  const names = [
+    ...SLASH_COMMANDS.map((c) => c.cmd),
+    ...listSkills().map((s) => '/' + s.name),
+  ];
+  const hits = names.filter((c) => c.startsWith(line));
+  return [hits.length ? hits : names, line];
+}
+
+/** 输入单个 / 时弹出的命令菜单文本 */
+function slashHint(): string {
+  const lines = SLASH_COMMANDS.map((c) => `  ${chalk.cyan(c.cmd.padEnd(9))} ${chalk.dim(c.desc)}`);
+  const skills = listSkills();
+  if (skills.length) {
+    lines.push(chalk.dim(`  — 技能（/<名>）：`) + skills.slice(0, 8).map((s) => '/' + s.name).join(' '));
+  }
+  return chalk.bold('可用命令（Tab 补全）：') + '\n' + lines.join('\n');
+}
+
+
 export async function startAgentRepl(config: SejuaniConfig, opts: ReplOptions = {}): Promise<void> {
   // 前置检查
   if (!aiConfigured()) {
@@ -33,6 +77,9 @@ export async function startAgentRepl(config: SejuaniConfig, opts: ReplOptions = 
 
   const brain = new AgentBrain(config, { model: opts.model, sessionId: opts.session, resume: !!opts.session });
 
+  // 当前思考指示器（生成中）；工具日志/回复打印前会被停掉
+  let activeSpinner: Spinner | null = null;
+
   // 注入三态确认（是/否/总是允许）与布尔确认回落
   brain.setConfirmEx(inquirerConfirmEx);
   brain.setConfirm(async (message) => (await inquirerConfirmEx(message)) !== 'no');
@@ -40,8 +87,11 @@ export async function startAgentRepl(config: SejuaniConfig, opts: ReplOptions = 
   // 注入输入回调（工作流 needsInput 补全）
   brain.setPromptInput(inquirerInput);
 
-  // 注入输出
-  brain.setPrint((text) => console.log(text));
+  // 注入输出（工具日志等）：打印前先停掉思考 spinner，避免单行冲突
+  brain.setPrint((text) => {
+    if (activeSpinner) { activeSpinner.stop(); activeSpinner = null; }
+    console.log(text);
+  });
 
   // 欢迎信息
   const toolCount = brain.getToolCount();
@@ -54,6 +104,7 @@ export async function startAgentRepl(config: SejuaniConfig, opts: ReplOptions = 
     input: process.stdin,
     output: process.stdout,
     prompt: chalk.green('sjn> '),
+    completer: slashCompleter,
   });
 
   // goal 模式运行中的 harness（SIGINT 中断链路用）
@@ -71,9 +122,33 @@ export async function startAgentRepl(config: SejuaniConfig, opts: ReplOptions = 
 
   rl.prompt();
 
+  // 输入单个 / 时即时弹出命令菜单（仅 TTY；非交互管道不触发）
+  if (process.stdin.isTTY) {
+    let hintShown = false;
+    process.stdin.on('keypress', () => {
+      setImmediate(() => {
+        if (rl.line === '/' && !hintShown) {
+          hintShown = true;
+          process.stdout.write('\n' + slashHint() + '\n');
+          rl.prompt(true); // 重绘提示符（preserveCursor）
+          process.stdout.write(rl.line); // 重新回显已输入的 /
+        } else if (rl.line !== '/') {
+          hintShown = false; // 离开 / 后重置，下次再提示
+        }
+      });
+    });
+  }
+
   rl.on('line', async (line) => {
     let input = line.trim();
     if (!input) {
+      rl.prompt();
+      return;
+    }
+
+    // 单个 / （回车）：弹出命令菜单
+    if (input === '/') {
+      console.log(slashHint());
       rl.prompt();
       return;
     }
@@ -227,7 +302,7 @@ export async function startAgentRepl(config: SejuaniConfig, opts: ReplOptions = 
       return;
     }
 
-    // 调用 Agent Brain（流式增量直接写 stdout）
+    // 调用 Agent Brain（收齐完整回复后渲染 Markdown；生成中显示思考 spinner）
     try {
       lastUserInput = input;
       const THINK: Record<string, string> = {
@@ -236,21 +311,30 @@ export async function startAgentRepl(config: SejuaniConfig, opts: ReplOptions = 
         high: '（请先充分拆解与推理再作答）',
       };
       const sendInput = thinkLevel ? `${THINK[thinkLevel]} ${input}` : input;
+      const before = brain.getStats();
+      const startAt = Date.now();
       console.log('');
-      let streamed = false;
-      const response = await brain.process(sendInput, {
-        onDelta: (text) => {
-          streamed = true;
-          process.stdout.write(text);
-        },
-      });
-      if (streamed) {
-        process.stdout.write('\n');
-      } else {
-        console.log(response);
+      activeSpinner = startSpinner('思考中');
+      let response: string;
+      try {
+        response = await brain.process(sendInput);
+      } finally {
+        if (activeSpinner) { activeSpinner.stop(); activeSpinner = null; }
       }
+      // 助手回复分隔标记 + 渲染 Markdown
+      console.log(chalk.cyan('⏺ ') + chalk.bold('Sejuani'));
+      console.log(renderMarkdown(response));
+      // 每轮状态 footer（模型 · 本轮 token · 耗时）
+      const after = brain.getStats();
+      const dtok = (after.promptTokens + after.completionTokens) - (before.promptTokens + before.completionTokens);
+      const dcalls = after.toolCalls - before.toolCalls;
+      const secs = ((Date.now() - startAt) / 1000).toFixed(1);
+      const model = getAiConfig().model || '';
+      const parts = [model && `⚡ ${model}`, dtok > 0 && `+${dtok} tokens`, dcalls > 0 && `${dcalls} 工具`, `${secs}s`].filter(Boolean);
+      console.log(chalk.dim('  ' + parts.join(' · ')));
       console.log('');
     } catch (err) {
+      if (activeSpinner) { activeSpinner.stop(); activeSpinner = null; }
       console.log(chalk.red(`\n[错误] ${(err as Error).message}\n`));
     }
 
@@ -262,7 +346,7 @@ export async function startAgentRepl(config: SejuaniConfig, opts: ReplOptions = 
     resolveRepl();
   });
 
-  // Ctrl+C：空闲时仅重绘提示符；执行中第一次提示、第二次中断（goal 模式下连同 harness 外层循环一并停止）
+  // Ctrl+C：执行中第一次提示、第二次中断；空闲时退出 REPL（当前行有内容则先清行）
   let lastSigint = 0;
   rl.on('SIGINT', () => {
     if (brain.isProcessing() || activeHarness) {
@@ -281,8 +365,17 @@ export async function startAgentRepl(config: SejuaniConfig, opts: ReplOptions = 
       }
       return;
     }
-    console.log('');
-    rl.prompt();
+    // 空闲态：当前行有未提交内容 → 清空输入；否则退出 REPL
+    if (rl.line && rl.line.length > 0) {
+      // @ts-ignore 清空当前输入行（readline 无公开 API，直接重置缓冲并重绘）
+      (rl as any).line = '';
+      // @ts-ignore
+      (rl as any).cursor = 0;
+      console.log('');
+      rl.prompt();
+      return;
+    }
+    rl.close(); // 触发 close 处理器（“再见！” + resolveRepl → 退出）
   });
 
   // 挂起直到 REPL 关闭，防止 index.ts 在 action 返回后立即 process.exit
