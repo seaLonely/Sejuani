@@ -20,6 +20,8 @@ export interface AgentTool {
   needsConfirm?: boolean;
   /** 只读工具（查询类）：同批 tool_calls 中可并行执行 */
   readOnly?: boolean;
+  /** 会 spawn 外部进程（如 MCP 发现类工具）：虽只读，但从「无人值守缺省只读白名单」中排除，避免零确认拉起外部命令 */
+  external?: boolean;
   /** 执行工具 */
   execute(args: Record<string, any>, ctx: AgentContext): Promise<ToolResult>;
 }
@@ -59,6 +61,8 @@ export interface AgentContext {
   print(text: string): void;
   /** Harness 任务清单（H1）：todo_write/read 工具读写，harness 读完成度 */
   todos: TodoItem[];
+  /** 子代理深度（主 Agent=0）：≥MAX_DEPTH 时 agent_dispatch 不可见/拒绝，防递归爆炸 */
+  subagentDepth: number;
 }
 
 /** 能力模块（一组相关工具的集合） */

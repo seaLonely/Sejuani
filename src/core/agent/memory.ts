@@ -5,11 +5,11 @@ import path from 'path';
 /**
  * 长期记忆系统（S2）：按域隔离的跨会话记忆，注入 system prompt 时受 3000 字符预算约束。
  * 存储 ~/.sejuani/memory/<domain>.json（存储无上限，注入时按权重裁剪）。
- * 分类：preference 用户偏好 / project 项目事实 / lesson 经验教训（H4 沉淀写入此类）。
+ * 分类：profile 用户画像（你是谁/团队/常用域，优先级最高） / preference 用户偏好 / project 项目事实 / lesson 经验教训（H4 沉淀写入此类）。
  * 零依赖，JSON 单文件简单可靠。
  */
 
-export type MemoryCategory = 'preference' | 'project' | 'lesson';
+export type MemoryCategory = 'profile' | 'preference' | 'project' | 'lesson';
 
 export interface MemoryEntry {
   id: string;
@@ -29,7 +29,7 @@ const CONTENT_MAX = 200;
 const MEMORY_DIR = path.join(os.homedir(), '.sejuani', 'memory');
 
 /** 类别注入优先级（数字越小越优先） */
-const CATEGORY_ORDER: Record<MemoryCategory, number> = { preference: 0, project: 1, lesson: 2 };
+const CATEGORY_ORDER: Record<MemoryCategory, number> = { profile: 0, preference: 1, project: 2, lesson: 3 };
 
 function memoryFile(domain: string): string {
   const safe = /^[a-zA-Z0-9._-]+$/.test(domain) ? domain : 'default';
@@ -134,6 +134,7 @@ export function renderMemory(domain: string): string {
   const header =
     '【长期记忆】以下为跨会话积累的记忆，供参考；与当前对话事实冲突时以现场为准：\n';
   const labelOf: Record<MemoryCategory, string> = {
+    profile: '画像',
     preference: '偏好',
     project: '项目',
     lesson: '教训',

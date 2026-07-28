@@ -11,6 +11,12 @@ import { coderCapability } from './capabilities/coder';
 import { memoryCapability } from './capabilities/memory';
 import { todoCapability } from './capabilities/todo';
 import { codeCapability } from './capabilities/code';
+import { subagentCapability } from './capabilities/subagent';
+import { skillCapability } from './capabilities/skill';
+import { sessionCapability } from './capabilities/session';
+import { channelCapability } from './capabilities/channel';
+import { mcpCapability } from './capabilities/mcp';
+import { notionCapability } from './capabilities/notion';
 
 /**
  * 工具注册表：收集全部 Capability 模块，展平成 tools 数组供 brain 使用。
@@ -26,6 +32,12 @@ const ALL_CAPABILITIES: Capability[] = [
   memoryCapability,
   todoCapability,
   codeCapability,
+  subagentCapability,
+  skillCapability,
+  sessionCapability,
+  channelCapability,
+  mcpCapability,
+  notionCapability,
 ];
 
 /** 展平后的全部工具 */

@@ -6,6 +6,8 @@ import type { YunxiaoConfigPatch } from './yunxiaoConfig';
 import type { CoderConfigPatch } from './coderConfig';
 import type { VirtualSpace } from './virtualSpaces';
 import type { RegistryOverride } from './registryOverrides';
+import type { ChannelsConfig } from './channelConfig';
+import type { McpConfig } from './mcpConfig';
 
 /**
  * ~/.sejuani/state.json 的唯一读写基座。
@@ -32,6 +34,10 @@ export interface SejuaniState {
   yunxiao?: YunxiaoConfigPatch;
   /** 编码工具配置片段 */
   coder?: CoderConfigPatch;
+  /** 渠道接入配置片段（U4：飞书/企业微信官方 API；不含个人微信） */
+  channels?: ChannelsConfig;
+  /** MCP 服务器接入配置片段（U5：Notion 等外部 MCP） */
+  mcp?: McpConfig;
 }
 
 /** 读取整个 state.json；文件缺失或损坏时返回空对象 */

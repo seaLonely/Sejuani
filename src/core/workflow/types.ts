@@ -23,8 +23,10 @@ export type StepKind =
   | 'coder.fix'
   | 'shell.run'
   | 'notify.summary'
+  | 'notify.channel'
   | 'flow.foreach'
   | 'flow.wait'
+  | 'skill.invoke'
   | 'agent.task'
   | 'yunxiao.comment'
   | 'yunxiao.transition';
@@ -131,6 +133,8 @@ export interface StepContext {
   runOutputs?: Record<string, Record<string, unknown>>;
   /** 触发上下文（W1 调度器/webhook 触发时注入，供表达式 {{trigger.*}} 引用） */
   trigger?: { type: string; firedAt: string; item?: unknown; payload?: unknown };
+  /** skill.invoke 调用栈（防循环/限深度；经 ctx 透传，任何嵌套路径包括 flow.foreach 都天然继承） */
+  skillStack?: string[];
   /** 云效修复流（fix-bug）专用的运行时数据；非该流程为 undefined */
   yunxiao?: YunxiaoStepData;
 }

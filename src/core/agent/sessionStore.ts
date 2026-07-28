@@ -119,3 +119,60 @@ export function appendAudit(sessionId: string, entry: AuditEntry): void {
 export function sessionsDir(): string {
   return SESSIONS_DIR;
 }
+
+export interface SessionHit {
+  id: string;
+  updatedAt: string;
+  snippets: string[];
+}
+
+/**
+ * 跨会话搜索（U2）：纯 JS 关键词/正则扫描全部会话的 user/assistant 文本，
+ * 返回命中会话与片段（按 updatedAt 倒序，限 limit）。不引 SQLite/向量库，守零依赖。
+ */
+export function searchSessions(
+  query: string,
+  opts: { limit?: number; regex?: boolean; excludeId?: string } = {}
+): SessionHit[] {
+  const q = (query ?? '').trim();
+  if (!q) return [];
+  const limit = opts.limit && opts.limit > 0 ? opts.limit : 10;
+  let matcher: (text: string) => boolean;
+  try {
+    if (opts.regex) {
+      const re = new RegExp(q, 'i');
+      matcher = (t) => re.test(t);
+    } else {
+      const lower = q.toLowerCase();
+      matcher = (t) => t.toLowerCase().includes(lower);
+    }
+  } catch {
+    const lower = q.toLowerCase();
+    matcher = (t) => t.toLowerCase().includes(lower);
+  }
+  try {
+    if (!fs.existsSync(SESSIONS_DIR)) return [];
+    const hits: SessionHit[] = [];
+    for (const f of fs.readdirSync(SESSIONS_DIR)) {
+      if (!f.endsWith('.json') || f.endsWith('.audit.jsonl')) continue;
+      const id = path.basename(f, '.json');
+      if (opts.excludeId && id === opts.excludeId) continue;
+      const rec = loadSession(id);
+      if (!rec) continue;
+      const snippets: string[] = [];
+      for (const m of rec.history) {
+        if (m.role !== 'user' && m.role !== 'assistant') continue;
+        const content = typeof m.content === 'string' ? m.content : '';
+        if (content && matcher(content)) {
+          const idx = snippets.length + 1;
+          snippets.push(`[${m.role}] ${content.slice(0, 200)}`);
+          if (idx >= 3) break;
+        }
+      }
+      if (snippets.length > 0) hits.push({ id, updatedAt: rec.updatedAt, snippets });
+    }
+    return hits.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, limit);
+  } catch {
+    return [];
+  }
+}

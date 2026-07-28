@@ -17,7 +17,16 @@ export function registerHookRoutes(router: Router, config: SejuaniConfig): void 
       return;
     }
     // 请求体已由 Router 统一解析（非 JSON 会被 400 拦截，空体为 {}）
-    const payload: unknown = r.body && Object.keys(r.body).length > 0 ? r.body : undefined;
+    const body: any = r.body && typeof r.body === 'object' ? r.body : {};
+
+    // 飞书/企业微信事件订阅的 URL 验证：回显 challenge（U4 入站首次校验必需）
+    if (body.type === 'url_verification' && typeof body.challenge === 'string') {
+      logEvent('info', 'hook.urlVerify', { path: hookPath });
+      sendJson(r.res, 200, { challenge: body.challenge });
+      return;
+    }
+
+    const payload: unknown = Object.keys(body).length > 0 ? body : undefined;
 
     const fired: string[] = [];
     const woken: string[] = [];

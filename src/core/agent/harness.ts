@@ -7,6 +7,7 @@ import { TodoItem, isAllDone, todoSummary, todosSignature } from './todo';
 import { runCommand } from '../exec';
 import { snapshotGit, changedSince, writeReport, GitSnapshot } from './report';
 import { upsertMemory } from './memory';
+import { SKILL_SUGGEST_THRESHOLD } from '../skill/creator';
 
 /**
  * AgentHarness（H1）：包裹 AgentBrain 的外层自主执行壳。
@@ -18,7 +19,7 @@ import { upsertMemory } from './memory';
 export type HarnessOutcome = 'completed' | 'budget-exhausted' | 'stalled' | 'aborted' | 'max-iterations';
 
 export interface HarnessEvent {
-  type: 'iteration-start' | 'iteration-end' | 'todo-update' | 'budget-warn' | 'loop-warn' | 'verify' | 'finish';
+  type: 'iteration-start' | 'iteration-end' | 'todo-update' | 'budget-warn' | 'loop-warn' | 'verify' | 'skill-suggest' | 'finish';
   iteration?: number;
   todos?: TodoItem[];
   reason?: string;
@@ -56,6 +57,8 @@ export interface HarnessOptions {
   reportId?: string;
   /** H4 经验沉淀：将本次总结作为 lesson 写入长期记忆（需传 memoryDomain） */
   memoryDomain?: string;
+  /** 子代理深度（agent_dispatch 构造子 harness 时传 父depth+1） */
+  subagentDepth?: number;
 }
 
 export interface HarnessResult {
@@ -94,6 +97,7 @@ export class AgentHarness {
       allowTools: opts.allowTools,
       grantedTools: opts.grantedTools,
       aiRole: opts.aiRole,
+      subagentDepth: opts.subagentDepth,
     };
     this.brain = new AgentBrain(config, brainOpts);
     this.brain.setLoopGuard(this.guard);
@@ -246,6 +250,10 @@ export class AgentHarness {
       } catch {
         /* 记忆写入失败不影响结果 */
       }
+    }
+    // U3 技能自创建建议：完成且工具调用达阈值时 emit（交互模式提示固化，无人值守仅记录）
+    if (outcome === 'completed' && result.usage.toolCalls >= SKILL_SUGGEST_THRESHOLD) {
+      this.emit({ type: 'skill-suggest', reason: `本次流程（${result.usage.toolCalls} 次工具调用）可固化为技能` });
     }
     this.emit({ type: 'finish', reason: outcome, todos: result.todos });
     return result;

@@ -1,8 +1,11 @@
 import { Command } from 'commander';
+import fs from 'fs';
+import path from 'path';
 import { loadConfig } from '../../core/config';
 import { startAgentRepl, runAgentGoal } from '../repl';
 import { chalk, logger } from '../../utils/logger';
 import { runEvals, loadCases, BUILTIN_CASES } from '../../core/agent/evals';
+import { SEJUANI_MD_TEMPLATE } from '../../core/agent/projectContext';
 
 /**
  * 智能 Agent 对话模式命令。
@@ -10,9 +13,9 @@ import { runEvals, loadCases, BUILTIN_CASES } from '../../core/agent/evals';
  */
 export function register(program: Command): void {
   program
-    .command('agent')
+    .command('agent', { isDefault: true })
     .alias('chat')
-    .description('启动智能 Agent：缺省对话模式；--goal 进入自主执行模式')
+    .description('启动智能 Agent 对话（默认入口）；--goal 进入自主执行模式（其余功能请用 sjn cli）')
     .option('-c, --config <file>', '指定配置文件')
     .option('--model <model>', '覆盖 LLM 模型')
     .option('--session <id>', '持久化会话 id（保存历史/统计/审计到 ~/.sejuani/agent-sessions/，重进可恢复）')
@@ -24,6 +27,22 @@ export function register(program: Command): void {
         return;
       }
       await startAgentRepl(config, { model: opts.model, session: opts.session });
+    });
+
+  // sjn agent init：在当前目录生成 SEJUANI.md 项目上下文模板
+  program
+    .command('agent-init')
+    .alias('init')
+    .description('在当前目录生成 SEJUANI.md 项目约定模板（会被 Agent 每次对话读取）')
+    .option('-f, --force', '已存在时覆盖', false)
+    .action((opts) => {
+      const target = path.join(process.cwd(), 'SEJUANI.md');
+      if (fs.existsSync(target) && !opts.force) {
+        logger.warn(`SEJUANI.md 已存在：${target}（用 --force 覆盖）`);
+        return;
+      }
+      fs.writeFileSync(target, SEJUANI_MD_TEMPLATE);
+      logger.success(`已生成 ${chalk.bold('SEJUANI.md')} → ${target}`);
     });
 
   // Evals 基准集回放（R5）：跑一组标准目标并汇总终局，用于改 prompt/模型后量化对比

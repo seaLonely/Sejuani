@@ -6,7 +6,7 @@ import { upsertMemory, forgetMemory, listMemory, MemoryCategory } from '../memor
  * 记忆按当前域隔离存储；memory_write/forget 为纯本地状态，无需确认。
  */
 
-const CATEGORIES: MemoryCategory[] = ['preference', 'project', 'lesson'];
+const CATEGORIES: MemoryCategory[] = ['profile', 'preference', 'project', 'lesson'];
 
 const memoryWrite: AgentTool = {
   name: 'memory_write',
@@ -17,7 +17,7 @@ const memoryWrite: AgentTool = {
     type: 'object',
     properties: {
       content: { type: 'string', description: '记忆内容（简洁陈述，≤200 字符）' },
-      category: { type: 'string', enum: CATEGORIES, description: '类别，缺省 preference' },
+      category: { type: 'string', enum: CATEGORIES, description: '类别：profile(用户画像:你是谁/团队/常用域)/preference(偏好)/project(项目事实)/lesson(教训)，缺省 preference' },
       id: { type: 'string', description: '可选，更新已有记忆时传其 id' },
     },
     required: ['content'],

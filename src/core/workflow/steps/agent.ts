@@ -15,7 +15,7 @@ import { getAllTools } from '../../agent/registry';
 
 /** 缺省白名单：全部只读工具 + 工单评论（含只读编码工具，不含写类 code 工具） */
 function defaultAllowTools(): string[] {
-  return [...getAllTools().filter((t) => t.readOnly).map((t) => t.name), 'yunxiao_comment'];
+  return [...getAllTools().filter((t) => t.readOnly && !t.external).map((t) => t.name), 'yunxiao_comment'];
 }
 
 export const agentTask: StepHandler = {

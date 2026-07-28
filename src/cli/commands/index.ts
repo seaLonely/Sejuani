@@ -14,6 +14,9 @@ import { register as registerIssue } from './issue';
 import { register as registerFix } from './fix';
 import { register as registerTask } from './task';
 import { register as registerAgent } from './agent';
+import { register as registerSkill } from './skill';
+import { register as registerChannel } from './channel';
+import { register as registerMcp } from './mcp';
 import { register as registerServe } from './serve';
 
 /** 依次注册所有命令组到 program。 */
@@ -33,5 +36,8 @@ export function registerAll(program: Command): void {
   registerFix(program); // fix <issueId>
   registerTask(program); // task / task list / task do / task done
   registerAgent(program); // agent / chat
+  registerSkill(program); // skill list/show/run/rm
+  registerChannel(program); // channel-config（飞书/企业微信）
+  registerMcp(program); // mcp / notion（外部 MCP + Notion 团队库）
   registerServe(program); // serve（本地 HTTP API 服务）
 }

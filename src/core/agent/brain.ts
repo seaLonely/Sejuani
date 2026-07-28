@@ -6,6 +6,8 @@ import { getAllTools, getToolByName, getToolFunctions, getSystemPromptContext } 
 import { SejuaniConfig, DOMAINS } from '../config';
 import { AgentStats, appendAudit, digestArgs, loadSession, saveSession } from './sessionStore';
 import { renderMemory } from './memory';
+import { listSkills } from '../skill/store';
+import { renderProjectContext } from './projectContext';
 
 /**
  * Agent Brain：管理对话上下文、组装 system prompt、调 LLM、解析 tool_calls、调度执行。
@@ -38,6 +40,8 @@ export interface BrainOptions {
   maxRounds?: number;
   /** S1 模型角色（缺省 chat；agent.task 传 agentTask 以使用巡检专用模型） */
   aiRole?: 'chat' | 'agentTask';
+  /** 子代理深度（主 Agent 缺省 0；子代理为父深度+1） */
+  subagentDepth?: number;
 }
 
 export interface ProcessOptions {
@@ -100,6 +104,7 @@ export class AgentBrain {
       grantedTools: new Set<string>(opts.grantedTools ?? []),
       print: (text) => logger.info(text),
       todos: [],
+      subagentDepth: opts.subagentDepth ?? 0,
     };
     // 从 sessionStore 恢复历史（system prompt 用最新配置重建，其余沿用）
     if (opts.sessionId && opts.resume) {
@@ -134,12 +139,13 @@ export class AgentBrain {
     this.ctx.print = fn;
   }
 
-  /** 受限工具视图：allowTools 提供时仅暴露白名单内工具 */
+  /** 受限工具视图：allowTools 提供时仅暴露白名单内工具；子代理（depth≥1）剔除 agent_dispatch 防递归 */
   private tools(): ReturnType<typeof getAllTools> {
     const all = getAllTools();
-    if (!this.opts.allowTools) return all;
+    const depthOk = (name: string): boolean => this.ctx.subagentDepth < 1 || name !== 'agent_dispatch';
+    if (!this.opts.allowTools) return all.filter((t) => depthOk(t.name));
     const allow = new Set(this.opts.allowTools);
-    return all.filter((t) => allow.has(t.name));
+    return all.filter((t) => allow.has(t.name) && depthOk(t.name));
   }
 
   /** 获取已注册工具数量 */
@@ -162,9 +168,24 @@ export class AgentBrain {
     return this.ctx.domain;
   }
 
+  /** 当前子代理深度（agent_dispatch 工具用于构造子代理 depth+1） */
+  getSubagentDepth(): number {
+    return this.ctx.subagentDepth;
+  }
+
   /** 当前任务清单（Harness 读完成度） */
   getTodos(): import('./todo').TodoItem[] {
     return this.ctx.todos;
+  }
+
+  /** 当前对话历史（/skill save 提炼技能用） */
+  getHistory(): ChatMessage[] {
+    return this.ctx.history;
+  }
+
+  /** 当前配置 */
+  getConfig(): SejuaniConfig {
+    return this.ctx.config;
   }
 
   /** 注入防循环护卫（Harness 自主循环时启用；传 null 关闭） */
@@ -198,11 +219,13 @@ export class AgentBrain {
       this.ctx.history.push({ role: 'user', content: userInput });
 
       const allowSet = this.opts.allowTools ? new Set(this.opts.allowTools) : null;
+      const depthOk = (name: string): boolean => this.ctx.subagentDepth < 1 || name !== 'agent_dispatch';
       const toolFunctions = procOpts.noTools
         ? []
-        : allowSet
-          ? getToolFunctions().filter((f) => allowSet.has(f.name))
-          : getToolFunctions();
+        : (allowSet
+            ? getToolFunctions().filter((f) => allowSet.has(f.name))
+            : getToolFunctions()
+          ).filter((f) => depthOk(f.name));
       const maxRounds = procOpts.noTools ? 1 : (this.opts.maxRounds ?? MAX_TOOL_ROUNDS);
       let rounds = 0;
 
@@ -465,6 +488,21 @@ export class AgentBrain {
     const domainCfg = DOMAINS[config.activeDomain as keyof typeof DOMAINS];
     const capabilities = getSystemPromptContext();
     const memorySection = renderMemory(config.activeDomain);
+    const projectSection = renderProjectContext(process.cwd());
+    // 可用技能清单（K1.5）：引导“先查 skill 再造”，预算 ≤1500 字符
+    const skills = listSkills();
+    let skillSection = '';
+    if (skills.length > 0) {
+      const lines = ['【可用技能】优先复用（用 skill_run 执行；无合适技能再自行处理）：'];
+      let used = lines[0].length;
+      for (const s of skills) {
+        const line = `- ${s.name}(${s.kind}): ${s.description}`;
+        if (used + line.length + 1 > 1500) break;
+        lines.push(line);
+        used += line.length + 1;
+      }
+      skillSection = lines.join('\n');
+    }
     return [
       '你是 Sejuani Agent——一个面向前端工程的智能开发助手，运行在终端 CLI 中。',
       '你可以通过调用工具来管理组件/工程仓库、执行批量工作流、管理云效工单、自动化任务流程、检测开发环境、调用编码工具。',
@@ -486,6 +524,11 @@ export class AgentBrain {
       '7. 你可以在会话内直接规划并执行工作流（workflow_plan 规划并保存 → workflow_run 执行）；执行中的危险步骤会逐一征求用户确认，无需让用户去终端执行命令',
       '8. 你有长期记忆：当用户表达偏好、纠正你、约定命名/流程或确认重要项目事实时，用 memory_write 记住；记忆随下方【长期记忆】段注入',
       '9. 编码任务选择准则：中小改动（定位→精确编辑→验证）用内建 code_* 工具自主完成；预估改动超 5 个文件、需长时推理、或用户点名外部工具时，用 coder 工具委托 claude/codex',
+      '10. 复杂任务可用 agent_dispatch 把独立子任务（如分别分析多个模块）拆给子 Agent 并行探索，子任务目标需自包含（子 Agent 看不到当前对话历史）',
+      '11. 接到任务先用 skill_list 看有无可复用技能；完成可复用的多步流程后，可建议用 skill_save 固化',
+      '12. 若已配置 Notion 团队库（notion_status 可查），处理需求单号前先查团队库有无现成流程；完成后可用 notion_call 把需求/技能/工作流/执行记录写回',
+      skillSection ? '\n' + skillSection : '',
+      projectSection ? '\n' + projectSection : '',
       memorySection ? '\n' + memorySection : '',
     ].join('\n');
   }
@@ -494,5 +537,29 @@ export class AgentBrain {
   clearHistory(): void {
     const system = this.ctx.history[0];
     this.ctx.history = [system];
+  }
+
+  /** 立即触发历史压缩（REPL /compact）；返回是否实际发生了压缩 */
+  async compactNow(): Promise<boolean> {
+    const before = this.ctx.history.length;
+    await this.compressHistoryIfNeeded();
+    return this.ctx.history.length < before;
+  }
+
+  /** 撤销上一轮（REPL /undo）：从尾部移除最近一组 assistant(+tool) 直到（含）上一条 user。
+   * 保护 tool_calls 协议：整组移除，不留悬挂；且不动 system 消息（含压缩摘要）。返回是否有可撤销内容。 */
+  undoLastTurn(): boolean {
+    const h = this.ctx.history;
+    let i = h.length - 1;
+    let removed = false;
+    while (i > 0) {
+      const role = h[i].role;
+      if (role === 'system') break; // 不弹 system（含压缩摘要）
+      h.pop();
+      removed = true;
+      i--;
+      if (role === 'user') break;
+    }
+    return removed;
   }
 }

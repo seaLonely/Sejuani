@@ -4,9 +4,13 @@ import { chalk, logger } from '../utils/logger';
 import { aiConfigured, getAiConfig, listProfiles, useProfile } from '../core/state/aiConfig';
 import { listMemory, forgetMemory } from '../core/agent/memory';
 import { renderTodos } from '../core/agent/todo';
-import { inquirerInput, inquirerConfirmEx } from '../ui/prompt';
+import { inquirerInput, inquirerConfirmEx, inquirerConfirm } from '../ui/prompt';
 import { AgentBrain } from '../core/agent/brain';
 import { AgentHarness } from '../core/agent/harness';
+import { listSkills, saveSkill, loadSkill } from '../core/skill/store';
+import { draftSkillFromHistory } from '../core/skill/creator';
+import { runSkill } from '../core/skill/run';
+import { reflectUserProfile, saveProfileFacts } from '../core/agent/profileReflect';
 
 /**
  * Agent REPL：交互式对话循环（流式输出）。
@@ -54,11 +58,21 @@ export async function startAgentRepl(config: SejuaniConfig, opts: ReplOptions = 
 
   // goal 模式运行中的 harness（SIGINT 中断链路用）
   let activeHarness: AgentHarness | null = null;
+  // U1 交互命令状态：上一条用户输入（/retry）与思考强度（/think）
+  let lastUserInput = '';
+  let thinkLevel: '' | 'low' | 'mid' | 'high' = '';
+
+  // 把整个 REPL 生命周期包为一个 Promise：直到 rl close 才 resolve。
+  // 否则 startAgentRepl 一 return，index.ts 的 .then() 会立即 process.exit() 把 REPL 杀掉。
+  let resolveRepl: () => void = () => {};
+  const replDone = new Promise<void>((resolve) => {
+    resolveRepl = resolve;
+  });
 
   rl.prompt();
 
   rl.on('line', async (line) => {
-    const input = line.trim();
+    let input = line.trim();
     if (!input) {
       rl.prompt();
       return;
@@ -78,6 +92,7 @@ export async function startAgentRepl(config: SejuaniConfig, opts: ReplOptions = 
           if (e.type === 'iteration-start') console.log(chalk.dim(`\n── 迭代 ${e.iteration} ──`));
           else if (e.type === 'todo-update' && e.todos) console.log(chalk.dim('\n' + renderTodos(e.todos)));
           else if (e.type === 'budget-warn' || e.type === 'loop-warn') console.log(chalk.yellow(`\n[${e.type}] ${e.reason ?? ''}`));
+          else if (e.type === 'skill-suggest') console.log(chalk.dim(`\n💡 ${e.reason ?? ''}，可用 /skill save 固化为技能`));
         },
       });
       // 中断链路：SIGINT 双击时需停止 harness 外层循环（仅 brain.abort 会继续迭代）
@@ -96,8 +111,113 @@ export async function startAgentRepl(config: SejuaniConfig, opts: ReplOptions = 
       return;
     }
 
+    // U1 异步交互命令（需 await/重跑）
+    const lower = input.toLowerCase();
+    if (lower === '/new' || lower === '/reset') {
+      brain.clearHistory();
+      lastUserInput = '';
+      console.log(chalk.dim('  已开启新会话（历史已清）。'));
+      rl.prompt();
+      return;
+    }
+    if (lower === '/compact') {
+      const did = await brain.compactNow();
+      console.log(chalk.dim(did ? '  已压缩对话历史。' : '  历史较短，无需压缩。'));
+      rl.prompt();
+      return;
+    }
+    if (lower === '/undo') {
+      const ok = brain.undoLastTurn();
+      console.log(chalk.dim(ok ? '  已撤销上一轮。' : '  无可撤销内容。'));
+      rl.prompt();
+      return;
+    }
+    if (lower === '/think' || lower.startsWith('/think ')) {
+      const lv = input.trim().split(/\s+/)[1] as 'low' | 'mid' | 'high' | undefined;
+      if (lv && ['low', 'mid', 'high'].includes(lv)) {
+        thinkLevel = lv;
+        console.log(chalk.dim(`  思考强度已设为 ${lv}。`));
+      } else {
+        console.log(chalk.dim(`  当前思考强度：${thinkLevel || '默认'}。用法：/think low|mid|high`));
+      }
+      rl.prompt();
+      return;
+    }
+    if (lower === '/retry') {
+      if (!lastUserInput) {
+        console.log(chalk.dim('  无上一条输入可重发。'));
+        rl.prompt();
+        return;
+      }
+      // 重新走下方对话流程
+      input = lastUserInput;
+    }
+    if (lower === '/profile') {
+      try {
+        console.log(chalk.dim('  正在从当前会话反思用户画像…'));
+        const facts = await reflectUserProfile(brain.getConfig(), brain.getHistory());
+        if (facts.length === 0) { console.log(chalk.dim('  无新增画像事实。')); rl.prompt(); return; }
+        console.log(chalk.dim('  推断画像：\n' + facts.map((f) => '    · ' + f).join('\n')));
+        const ok = await inquirerConfirm('写入这些画像到长期记忆？');
+        if (ok) { const n = saveProfileFacts(brain.getConfig().activeDomain, facts); console.log(chalk.green(`  已写入 ${n} 条画像记忆`)); }
+        else console.log(chalk.dim('  已取消。'));
+      } catch (err) {
+        console.log(chalk.red(`  反思失败：${(err as Error).message}`));
+      }
+      rl.prompt();
+      return;
+    }
+    if (lower === '/skill' || lower.startsWith('/skill ')) {
+      const parts = input.trim().split(/\s+/);
+      const sub = (parts[1] ?? 'list').toLowerCase();
+      if (sub === 'list') {
+        const skills = listSkills();
+        console.log(chalk.dim(skills.length ? skills.map((s) => `  ${s.name} (${s.kind}) ${s.description}`).join('\n') : '  （暂无技能）'));
+      } else if (sub === 'save') {
+        try {
+          console.log(chalk.dim('  正在从当前会话提炼技能草案…'));
+          const draft = await draftSkillFromHistory(brain.getConfig(), brain.getHistory(), { name: parts[2] });
+          console.log(chalk.dim(`  草案：${draft.name} (${draft.kind}) - ${draft.description}`));
+          const ok = await inquirerConfirm(`保存技能 ${draft.name}？`);
+          if (ok) { saveSkill(draft); console.log(chalk.green(`  已保存技能 ${draft.name}`)); }
+          else console.log(chalk.dim('  已取消。'));
+        } catch (err) {
+          console.log(chalk.red(`  提炼失败：${(err as Error).message}`));
+        }
+      } else {
+        console.log(chalk.dim('  用法：/skill list | /skill save [名]'));
+      }
+      rl.prompt();
+      return;
+    }
+
+    // per-skill slash 命令（对齐 Hermes：每个技能即一个 /<name> 命令）：/<skill> [任务]
+    // 保留名短路：不得遮蔽内置命令（即使存在同名技能）
+    const RESERVED_SLASH = new Set([
+      'exit', 'quit', 'q', 'clear', 'tools', 'stats', 'memory', 'model', 'todos', 'help',
+      'goal', 'new', 'reset', 'compact', 'undo', 'retry', 'think', 'skill', 'profile',
+    ]);
+    if (input.startsWith('/') && !input.startsWith('/ ')) {
+      const m = /^\/([a-zA-Z0-9._-]+)(?:\s+([\s\S]*))?$/.exec(input.trim());
+      if (m && !RESERVED_SLASH.has(m[1].toLowerCase())) {
+        const sk = loadSkill(m[1]);
+        if (sk) {
+          const task = (m[2] ?? '').trim();
+          if (sk.kind === 'workflow') {
+            const r = await runSkill(brain.getConfig(), sk, { confirm: inquirerConfirm, promptInput: inquirerInput, params: task ? { task } : undefined });
+            console.log(r.ok ? chalk.green(`  ${r.summary}`) : chalk.yellow(`  ${r.summary}`));
+            rl.prompt();
+            return;
+          }
+          // prompt 型：把技能指南作为上下文 + 用户任务，走正常对话流程
+          input = `【技能：${sk.title || sk.name}】\n${sk.guide ?? ''}${task ? `\n\n任务：${task}` : ''}`;
+          // 不 return，落到下方 brain.process
+        }
+      }
+    }
+
     // 内置命令
-    if (input.startsWith('/')) {
+    if (input.startsWith('/') && input === line.trim()) {
       const handled = handleCommand(input, brain);
       if (handled === 'exit') {
         rl.close();
@@ -109,9 +229,16 @@ export async function startAgentRepl(config: SejuaniConfig, opts: ReplOptions = 
 
     // 调用 Agent Brain（流式增量直接写 stdout）
     try {
+      lastUserInput = input;
+      const THINK: Record<string, string> = {
+        low: '（简洁作答，少推理）',
+        mid: '（适度思考后作答）',
+        high: '（请先充分拆解与推理再作答）',
+      };
+      const sendInput = thinkLevel ? `${THINK[thinkLevel]} ${input}` : input;
       console.log('');
       let streamed = false;
-      const response = await brain.process(input, {
+      const response = await brain.process(sendInput, {
         onDelta: (text) => {
           streamed = true;
           process.stdout.write(text);
@@ -132,6 +259,7 @@ export async function startAgentRepl(config: SejuaniConfig, opts: ReplOptions = 
 
   rl.on('close', () => {
     console.log(chalk.dim('\n再见！'));
+    resolveRepl();
   });
 
   // Ctrl+C：空闲时仅重绘提示符；执行中第一次提示、第二次中断（goal 模式下连同 harness 外层循环一并停止）
@@ -156,6 +284,9 @@ export async function startAgentRepl(config: SejuaniConfig, opts: ReplOptions = 
     console.log('');
     rl.prompt();
   });
+
+  // 挂起直到 REPL 关闭，防止 index.ts 在 action 返回后立即 process.exit
+  await replDone;
 }
 
 /** 处理 / 开头的内置命令。返回 'exit' 表示退出 REPL。 */
@@ -251,6 +382,14 @@ ${chalk.bold('内置命令：')}
   /todos    查看当前任务清单（自主执行中）
   /memory   查看长期记忆（/memory rm <id> 删除）
   /model    查看/切换模型 profile（/model <名>）
+  /skill    技能：/skill list 列出 · /skill save [名] 固化当前会话
+  /profile  从当前会话反思并更新用户画像（写入长期记忆）
+  /<技能名> [任务]  直接调用一个已保存技能（workflow 型立即执行 / prompt 型载入指南）
+  /new      开启新会话（清空历史，同 /clear）
+  /compact  立即压缩对话历史
+  /retry    重发上一条输入
+  /undo     撤销上一轮对话
+  /think    设思考强度：/think low|mid|high
   /clear    清除对话历史
   /exit     退出 Agent
   /help     显示本帮助
@@ -291,6 +430,7 @@ export async function runAgentGoal(
       if (e.type === 'iteration-start') console.log(chalk.dim(`\n── 迭代 ${e.iteration} ──`));
       else if (e.type === 'todo-update' && e.todos) console.log(chalk.dim('\n' + renderTodos(e.todos)));
       else if (e.type === 'budget-warn' || e.type === 'loop-warn') console.log(chalk.yellow(`\n[${e.type}] ${e.reason ?? ''}`));
+      else if (e.type === 'skill-suggest') console.log(chalk.dim(`\n💡 ${e.reason ?? ''}`));
     },
   });
   const brain = harness.getBrain();

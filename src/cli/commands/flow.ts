@@ -18,6 +18,8 @@ import { buildStepContext } from '../../core/workflow/context';
 import { startScheduler, resumeExecution, computeNextAt } from '../../core/workflow/scheduler';
 import { parseCron } from '../../core/workflow/cron';
 import { listTemplates, loadTemplate, removeTemplate, templatesDir } from '../../core/workflow/templates';
+import { skillFromWorkflow } from '../../core/skill/creator';
+import { saveSkill } from '../../core/skill/store';
 import { runLogFile, tailRunLog, logsDir } from '../../utils/fileLogger';
 
 /**
@@ -261,6 +263,22 @@ async function handleFlow(
         logger.info(
           `  ${chalk.bold(e.execId)}  ${tone(e.status)}  ${chalk.dim(`${e.trigger.type} · ${okSteps}步ok · ${e.startedAt}${e.endedAt ? ` → ${e.endedAt}` : ''}`)}`
         );
+      }
+      return;
+    }
+    case 'save-skill': {
+      if (!arg) {
+        logger.error('用法: sjn flow save-skill <workflowId> <skillName>');
+        process.exitCode = 1;
+        return;
+      }
+      const skill = skillFromWorkflow(spec, { name: arg, title: spec.title });
+      try {
+        const dir = saveSkill(skill);
+        logger.success(`已把工作流 ${id} 固化为技能 ${chalk.bold(arg)} → ${dir}`);
+      } catch (err) {
+        logger.error((err as Error).message);
+        process.exitCode = 1;
       }
       return;
     }
