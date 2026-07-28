@@ -122,31 +122,55 @@ export async function startAgentRepl(config: SejuaniConfig, opts: ReplOptions = 
 
   rl.prompt();
 
-  // 输入单个 / 时即时弹出命令菜单（仅 TTY；非交互管道不触发）
+  // 实时过滤命令浮层（对齐 opencode：随输入收窄，而非一次铺全）。仅 TTY。
+  // 零依赖实现：在输入行下方用 ANSI 光标保存/恢复绘制，不干扰 readline 行编辑。
+  let menuLines = 0;
+  const clearMenu = (): void => {
+    if (menuLines === 0) return;
+    let s = '\x1b7'; // 保存光标
+    for (let k = 0; k < menuLines; k++) s += '\n\x1b[2K'; // 逐行下移并清除
+    s += '\x1b8'; // 恢复光标
+    process.stdout.write(s);
+    menuLines = 0;
+  };
+  const drawMenu = (items: Array<{ cmd: string; desc: string }>): void => {
+    clearMenu();
+    if (items.length === 0) return;
+    let s = '\x1b7';
+    items.forEach((it, idx) => {
+      const label = chalk.cyan(it.cmd.padEnd(10)) + ' ' + chalk.dim(it.desc);
+      s += '\n\x1b[2K' + (idx === 0 ? chalk.green('❯ ') : '  ') + label;
+    });
+    s += '\x1b8';
+    process.stdout.write(s);
+    menuLines = items.length;
+  };
   if (process.stdin.isTTY) {
-    let hintShown = false;
     process.stdin.on('keypress', () => {
       setImmediate(() => {
-        if (rl.line === '/' && !hintShown) {
-          hintShown = true;
-          process.stdout.write('\n' + slashHint() + '\n');
-          rl.prompt(true); // 重绘提示符（preserveCursor）
-          process.stdout.write(rl.line); // 重新回显已输入的 /
-        } else if (rl.line !== '/') {
-          hintShown = false; // 离开 / 后重置，下次再提示
-        }
+        const l = rl.line ?? '';
+        const m = /^\/([a-zA-Z0-9._-]*)$/.exec(l); // 仅“斜杠+命令名”阶段（无空格/参数）才提示
+        if (!m) { clearMenu(); return; }
+        const q = l.toLowerCase();
+        const all = [
+          ...SLASH_COMMANDS,
+          ...listSkills().map((s) => ({ cmd: '/' + s.name, desc: s.description || '技能' })),
+        ];
+        drawMenu(all.filter((it) => it.cmd.toLowerCase().startsWith(q)).slice(0, 8));
       });
     });
   }
 
   rl.on('line', async (line) => {
+    // 提交时清除过滤浮层（回车后光标已下移，直接清除光标下方残留）
+    if (menuLines > 0) { process.stdout.write('\x1b[0J'); menuLines = 0; }
     let input = line.trim();
     if (!input) {
       rl.prompt();
       return;
     }
 
-    // 单个 / （回车）：弹出命令菜单
+    // 单个 / （回车）：弹出完整命令菜单（帮助）
     if (input === '/') {
       console.log(slashHint());
       rl.prompt();
